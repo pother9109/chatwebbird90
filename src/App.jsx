@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import Lobby from './components/Lobby.jsx';
 import ChatRoom from './components/ChatRoom.jsx';
+import ErrorBoundary from './components/ErrorBoundary.jsx';
 import usePeer from './hooks/usePeer.js';
 
 export default function App() {
@@ -55,11 +56,13 @@ export default function App() {
       {/* Main Layout Container */}
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column', zIndex: 2 }}>
         {roomId ? (
-          <ChatRoom 
-            roomId={roomId} 
-            peerState={peerState} 
-            onLeave={handleLeaveRoom} 
-          />
+          <ErrorBoundary onReset={handleLeaveRoom}>
+            <ChatRoom 
+              roomId={roomId} 
+              peerState={peerState} 
+              onLeave={handleLeaveRoom} 
+            />
+          </ErrorBoundary>
         ) : (
           <Lobby 
             onCreateRoom={handleCreateRoom} 

@@ -151,6 +151,16 @@ export default function usePeer(roomId) {
             timestamp: data.timestamp
           });
           break;
+        case 'sticker':
+          addMessage({
+            id: data.id,
+            sender: 'peer',
+            type: 'sticker',
+            content: data.content,
+            timer: data.timer,
+            timestamp: data.timestamp
+          });
+          break;
         case 'file':
           let blob = data.blob;
           if (!(blob instanceof Blob) && data.arrayBuffer) {
@@ -165,6 +175,7 @@ export default function usePeer(roomId) {
             fileType: data.mime,
             fileSize: data.size,
             timer: data.timer,
+            viewOnce: data.viewOnce || false,
             timestamp: data.timestamp
           });
           break;
@@ -236,41 +247,111 @@ export default function usePeer(roomId) {
     });
   };
 
-  // Send binary file
-  const sendFile = async (file, timer) => {
+  // Send sticker message
+  const sendSticker = (stickerUrl, timer) => {
     if (!connRef.current || !isConnected) return;
+
+    const msgId = 'sticker-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now();
+    const payload = {
+      id: msgId,
+      type: 'sticker',
+      content: stickerUrl,
+      timer: timer || null,
+      timestamp: Date.now()
+    };
+
+    connRef.current.send(payload);
+
+    addMessage({
+      ...payload,
+      sender: 'me'
+    });
+  };
+
+  // Send binary file safely
+  const sendFile = async (file, timer, viewOnce) => {
+    if (!connRef.current || !isConnected) return;
+
+    // Enforce a 15MB size limit to prevent WebRTC data channel buffer overflow crashes
+    const MAX_FILE_SIZE = 15 * 1024 * 1024; // 15MB
+    if (file.size > MAX_FILE_SIZE) {
+      addMessage({
+        id: 'system-err-' + Date.now(),
+        sender: 'system',
+        type: 'status',
+        content: `No se pudo enviar "${file.name}": El archivo supera el límite recomendado de 15MB para transferencias directas P2P.`,
+        timestamp: Date.now()
+      });
+      return;
+    }
 
     const msgId = 'file-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now();
     
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const arrayBuffer = event.target.result;
-      const payload = {
-        id: msgId,
-        type: 'file',
-        arrayBuffer: arrayBuffer,
-        name: file.name,
-        mime: file.type,
-        size: file.size,
-        timer: timer || null,
-        timestamp: Date.now()
+    try {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const arrayBuffer = event.target.result;
+          const payload = {
+            id: msgId,
+            type: 'file',
+            arrayBuffer: arrayBuffer,
+            name: file.name,
+            mime: file.type,
+            size: file.size,
+            timer: timer || null,
+            viewOnce: viewOnce || false,
+            timestamp: Date.now()
+          };
+
+          connRef.current.send(payload);
+
+          addMessage({
+            id: msgId,
+            sender: 'me',
+            type: 'file',
+            fileBlob: file,
+            fileName: file.name,
+            fileType: file.type,
+            fileSize: file.size,
+            timer: timer || null,
+            viewOnce: viewOnce || false,
+            timestamp: Date.now()
+          });
+        } catch (sendErr) {
+          console.error('Error serializing/sending file payload:', sendErr);
+          addMessage({
+            id: 'system-err-' + Date.now(),
+            sender: 'system',
+            type: 'status',
+            content: `Error al enviar "${file.name}": El navegador no pudo serializar el archivo.`,
+            timestamp: Date.now()
+          });
+        }
+      };
+      
+      reader.onerror = (readErr) => {
+        console.error('FileReader error:', readErr);
+        addMessage({
+          id: 'system-err-' + Date.now(),
+          sender: 'system',
+          type: 'status',
+          content: `Error al leer "${file.name}" del disco.`,
+          timestamp: Date.now()
+        });
       };
 
-      connRef.current.send(payload);
-
+      reader.readAsArrayBuffer(file);
+    } catch (err) {
+      console.error('Exception in sendFile outer block:', err);
       addMessage({
-        id: msgId,
-        sender: 'me',
-        type: 'file',
-        fileBlob: file,
-        fileName: file.name,
-        fileType: file.type,
-        fileSize: file.size,
-        timer: timer || null,
+        id: 'system-err-' + Date.now(),
+        sender: 'system',
+        type: 'status',
+        content: `Error del sistema al preparar el archivo "${file.name}".`,
         timestamp: Date.now()
       });
-    };
-    reader.readAsArrayBuffer(file);
+    }
   };
 
   // Send typing status
@@ -288,6 +369,23 @@ export default function usePeer(roomId) {
       connRef.current.send({ type: 'burn' });
     }
     burnMessages();
+  };
+
+  // Burn/destroy content of a single message (e.g. for view-once photos)
+  const burnMessage = (id) => {
+    setMessages((prev) => prev.map(m => {
+      if (m.id === id) {
+        return {
+          ...m,
+          fileBlob: null,
+          fileType: null,
+          viewOnceBurned: true,
+          type: 'text',
+          content: '👁️ Foto vista y autodestruida'
+        };
+      }
+      return m;
+    }));
   };
 
   // Disconnect from current room
@@ -317,8 +415,10 @@ export default function usePeer(roomId) {
     messages,
     sendMessage,
     sendFile,
+    sendSticker,
     sendTyping,
     burn,
+    burnMessage,
     disconnect
   };
 }
