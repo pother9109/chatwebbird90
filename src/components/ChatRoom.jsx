@@ -204,6 +204,7 @@ function DisappearingMessage({ message, onExpire }) {
 export default function ChatRoom({ roomId, peerState, onLeave }) {
   const {
     peerId,
+    isHost,
     isConnected,
     isConnecting,
     isPeerTyping,
@@ -535,7 +536,7 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
                 </p>
                 <button onClick={onLeave} className="btn-glow">Regresar al Inicio</button>
               </div>
-            ) : (
+            ) : isHost ? (
               <div className="fade-in" style={{ maxWidth: '500px', width: '100%' }}>
                 <h3 style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: '8px' }}>Esperando a la otra persona...</h3>
                 <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '30px' }}>
@@ -586,6 +587,28 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
                     ¡Enlace de invitación copiado!
                   </span>
                 )}
+              </div>
+            ) : (
+              <div className="fade-in" style={{ maxWidth: '500px', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                <div style={{
+                  width: '50px',
+                  height: '50px',
+                  borderRadius: '50%',
+                  border: '3px solid rgba(6, 182, 212, 0.1)',
+                  borderTopColor: 'var(--color-secondary)',
+                  animation: 'spin 1s linear infinite',
+                  marginBottom: '20px'
+                }} />
+                <h3 style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: '8px' }}>Estableciendo conexión segura...</h3>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '30px' }}>
+                  Buscando al creador de la sala para iniciar el túnel de datos cifrado (P2P).
+                </p>
+                <button onClick={onLeave} className="btn-glass" style={{ borderColor: 'rgba(255,255,255,0.1)' }}>Cancelar y Salir</button>
+                <style>{`
+                  @keyframes spin {
+                    to { transform: rotate(360deg); }
+                  }
+                `}</style>
               </div>
             )}
           </div>

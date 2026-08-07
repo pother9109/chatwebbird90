@@ -3,6 +3,7 @@ import Peer from 'peerjs';
 
 export default function usePeer(roomId) {
   const [peerId, setPeerId] = useState(null);
+  const [isHost, setIsHost] = useState(true);
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isPeerTyping, setIsPeerTyping] = useState(false);
@@ -11,7 +12,8 @@ export default function usePeer(roomId) {
   
   const peerRef = useRef(null);
   const connRef = useRef(null);
-  const typingTimeoutRef = useRef(null);
+  const retryCountRef = useRef(0);
+  const isHostRef = useRef(true);
 
   // Helper to add messages to local state
   const addMessage = (msg) => {
@@ -27,15 +29,13 @@ export default function usePeer(roomId) {
   useEffect(() => {
     if (!roomId) return;
 
-    // We can use the roomId directly as the Peer ID if we want,
-    // or let the first user generate a room and the second join.
-    // To keep it simple: Host's peer ID is the roomId.
-    // Client connects to that peer ID.
-    // We will initialize a Peer. If we are the creator (host), our ID is the roomId.
-    // If we are joining, our ID is random, and we will connect to roomId.
-    const isHost = !window.location.search.includes('join=true');
+    const host = !window.location.search.includes('join=true');
+    setIsHost(host);
+    isHostRef.current = host;
+    retryCountRef.current = 0;
+
     const peerOptions = {
-      debug: 1, // Only show errors
+      debug: 1, // Log only errors
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
@@ -45,7 +45,9 @@ export default function usePeer(roomId) {
       }
     };
 
-    const peerIdToUse = isHost ? roomId : null;
+    // If host, attempt to use roomId as the Peer ID.
+    // If guest, PeerJS generates a random ID, and we connect to the host's roomId.
+    const peerIdToUse = host ? roomId : null;
     const peer = new Peer(peerIdToUse, peerOptions);
     peerRef.current = peer;
 
@@ -53,36 +55,51 @@ export default function usePeer(roomId) {
       setPeerId(id);
       setIsConnecting(true);
 
-      // If we are not the host, we should connect to the host (roomId) automatically
-      if (!isHost) {
+      // If we are the guest, automatically connect to the host
+      if (!host) {
         connectToPeer(roomId);
       }
     });
 
     peer.on('connection', (connection) => {
-      // If we already have a connection, reject new ones (2-person limit)
-      if (connRef.current && connRef.current.open) {
-        connection.on('open', () => {
-          connection.send({ type: 'system-reject', message: 'Sala llena' });
-          setTimeout(() => connection.close(), 500);
-        });
-        return;
+      console.log('Incoming connection request received');
+      
+      // Self-healing: If we already have a connection, close the old one
+      // to let the new connection take over (e.g. if the guest refreshed)
+      if (connRef.current) {
+        console.log('Closing old connection to accept new incoming connection');
+        connRef.current.close();
       }
+      
       setupConnection(connection);
     });
 
     peer.on('error', (err) => {
-      console.error('PeerJS error:', err);
-      // Handle ID taken or unable to connect
+      console.error('PeerJS error:', err.type, err);
+      
       if (err.type === 'unavailable-id') {
         setError('El ID de sala ya está en uso o no disponible.');
+        setIsConnecting(false);
       } else if (err.type === 'peer-unavailable') {
-        setError('No se pudo encontrar a la otra persona. Asegúrate de que el enlace sea correcto y siga activa la sala.');
+        // If host isn't fully registered on the cloud signaling server yet, auto-retry
+        if (!isHostRef.current && retryCountRef.current < 3) {
+          retryCountRef.current += 1;
+          setError(`Sala temporal aún no disponible. Reintentando conexión (${retryCountRef.current}/3)...`);
+          setTimeout(() => {
+            if (peerRef.current && !peerRef.current.destroyed) {
+              connectToPeer(roomId);
+            }
+          }, 2000);
+        } else {
+          setError('No se pudo encontrar a la otra persona. Asegúrate de que el enlace sea correcto y de que el creador de la sala siga en ella.');
+          setIsConnecting(false);
+          setIsConnected(false);
+        }
       } else {
-        setError('Error de conexión: ' + err.message);
+        setError('Error de comunicación: ' + err.message);
+        setIsConnecting(false);
+        setIsConnected(false);
       }
-      setIsConnecting(false);
-      setIsConnected(false);
     });
 
     return () => {
@@ -95,12 +112,13 @@ export default function usePeer(roomId) {
     connRef.current = connection;
     setIsConnecting(true);
 
-    connection.on('open', () => {
+    const onOpen = () => {
+      console.log('Data channel connected successfully');
       setIsConnected(true);
       setIsConnecting(false);
       setError(null);
+      retryCountRef.current = 0;
       
-      // Play a nice connection sound if possible or handle in UI
       addMessage({
         id: 'system-' + Date.now(),
         sender: 'system',
@@ -108,16 +126,21 @@ export default function usePeer(roomId) {
         content: 'Conexión segura establecida en tiempo real (P2P).',
         timestamp: Date.now()
       });
-    });
+    };
+
+    // PeerJS race condition fix:
+    // If the data connection is already open when we register the listeners,
+    // invoke the open handler immediately!
+    if (connection.open) {
+      onOpen();
+    } else {
+      connection.on('open', onOpen);
+    }
 
     connection.on('data', (data) => {
       if (!data) return;
 
       switch (data.type) {
-        case 'system-reject':
-          setError(data.message || 'La sala está llena.');
-          disconnect();
-          break;
         case 'text':
           addMessage({
             id: data.id,
@@ -129,7 +152,6 @@ export default function usePeer(roomId) {
           });
           break;
         case 'file':
-          // Re-create Blob from arraybuffer/array if transmitted raw
           let blob = data.blob;
           if (!(blob instanceof Blob) && data.arrayBuffer) {
             blob = new Blob([data.arrayBuffer], { type: data.mime });
@@ -158,6 +180,7 @@ export default function usePeer(roomId) {
     });
 
     connection.on('close', () => {
+      console.log('Connection closed');
       setIsConnected(false);
       setIsConnecting(false);
       addMessage({
@@ -177,9 +200,14 @@ export default function usePeer(roomId) {
     });
   };
 
-  // Connect to another peer
+  // Connect to another peer (guest initiating connection to host)
   const connectToPeer = (destId) => {
     if (!peerRef.current) return;
+    console.log('Initiating connection to host:', destId);
+    
+    // Set connecting state
+    setIsConnecting(true);
+    
     const connection = peerRef.current.connect(destId, {
       reliable: true
     });
@@ -214,7 +242,6 @@ export default function usePeer(roomId) {
 
     const msgId = 'file-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now();
     
-    // Convert to ArrayBuffer for reliable transfer across all browsers
     const reader = new FileReader();
     reader.onload = (event) => {
       const arrayBuffer = event.target.result;
@@ -231,12 +258,11 @@ export default function usePeer(roomId) {
 
       connRef.current.send(payload);
 
-      // Add to our own messages as a Blob
       addMessage({
         id: msgId,
         sender: 'me',
         type: 'file',
-        fileBlob: file, // Keep file directly
+        fileBlob: file,
         fileName: file.name,
         fileType: file.type,
         fileSize: file.size,
@@ -266,6 +292,7 @@ export default function usePeer(roomId) {
 
   // Disconnect from current room
   const disconnect = () => {
+    console.log('Disconnecting and cleaning peer resources');
     if (connRef.current) {
       connRef.current.close();
       connRef.current = null;
@@ -282,6 +309,7 @@ export default function usePeer(roomId) {
 
   return {
     peerId,
+    isHost,
     isConnected,
     isConnecting,
     isPeerTyping,
@@ -294,3 +322,4 @@ export default function usePeer(roomId) {
     disconnect
   };
 }
+
