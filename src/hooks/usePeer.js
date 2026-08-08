@@ -35,12 +35,15 @@ export default function usePeer(roomId) {
     retryCountRef.current = 0;
 
     const peerOptions = {
-      debug: 1, // Log only errors
+      debug: 1,
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
           { urls: 'stun:stun2.l.google.com:19302' },
+          { urls: 'stun:stun3.l.google.com:19302' },
+          { urls: 'stun:stun4.l.google.com:19302' },
+          { urls: 'stun:global.stun.twilio.com:3478' }
         ]
       }
     };
@@ -62,7 +65,7 @@ export default function usePeer(roomId) {
     });
 
     peer.on('connection', (connection) => {
-      console.log('Incoming connection request received');
+      console.log('Incoming connection request received from peer');
       
       // Self-healing: If we already have a connection, close the old one
       // to let the new connection take over (e.g. if the guest refreshed)
@@ -78,20 +81,20 @@ export default function usePeer(roomId) {
       console.error('PeerJS error:', err.type, err);
       
       if (err.type === 'unavailable-id') {
-        setError('El ID de sala ya está en uso o no disponible.');
+        setError('El ID de sala ya está en uso o expirando en la red. Intenta crear una nueva sala.');
         setIsConnecting(false);
       } else if (err.type === 'peer-unavailable') {
         // If host isn't fully registered on the cloud signaling server yet, auto-retry
-        if (!isHostRef.current && retryCountRef.current < 3) {
+        if (!isHostRef.current && retryCountRef.current < 5) {
           retryCountRef.current += 1;
-          setError(`Sala temporal aún no disponible. Reintentando conexión (${retryCountRef.current}/3)...`);
+          setError(`Buscando al creador de la sala... Reintentando (${retryCountRef.current}/5)`);
           setTimeout(() => {
             if (peerRef.current && !peerRef.current.destroyed) {
               connectToPeer(roomId);
             }
-          }, 2000);
+          }, 1500);
         } else {
-          setError('No se pudo encontrar a la otra persona. Asegúrate de que el enlace sea correcto y de que el creador de la sala siga en ella.');
+          setError('No se pudo encontrar al creador de la sala. Asegúrate de que el enlace sea correcto y de que la sala del anfitrión siga abierta.');
           setIsConnecting(false);
           setIsConnected(false);
         }
@@ -113,7 +116,7 @@ export default function usePeer(roomId) {
     setIsConnecting(true);
 
     const onOpen = () => {
-      console.log('Data channel connected successfully');
+      console.log('Data channel connected successfully!');
       setIsConnected(true);
       setIsConnecting(false);
       setError(null);
@@ -128,13 +131,22 @@ export default function usePeer(roomId) {
       });
     };
 
-    // PeerJS race condition fix:
-    // If the data connection is already open when we register the listeners,
-    // invoke the open handler immediately!
+    // Double-insurance polling interval for open state
+    const openCheckInterval = setInterval(() => {
+      if (connection.open) {
+        clearInterval(openCheckInterval);
+        onOpen();
+      }
+    }, 200);
+
     if (connection.open) {
+      clearInterval(openCheckInterval);
       onOpen();
     } else {
-      connection.on('open', onOpen);
+      connection.on('open', () => {
+        clearInterval(openCheckInterval);
+        onOpen();
+      });
     }
 
     connection.on('data', (data) => {
@@ -192,6 +204,7 @@ export default function usePeer(roomId) {
 
     connection.on('close', () => {
       console.log('Connection closed');
+      clearInterval(openCheckInterval);
       setIsConnected(false);
       setIsConnecting(false);
       addMessage({
@@ -206,6 +219,7 @@ export default function usePeer(roomId) {
 
     connection.on('error', (err) => {
       console.error('Connection error:', err);
+      clearInterval(openCheckInterval);
       setIsConnected(false);
       setIsConnecting(false);
     });
@@ -213,15 +227,13 @@ export default function usePeer(roomId) {
 
   // Connect to another peer (guest initiating connection to host)
   const connectToPeer = (destId) => {
-    if (!peerRef.current) return;
-    console.log('Initiating connection to host:', destId);
+    if (!peerRef.current || peerRef.current.destroyed) return;
+    console.log('Initiating native WebRTC connection to host:', destId);
     
-    // Set connecting state
     setIsConnecting(true);
     
-    const connection = peerRef.current.connect(destId, {
-      reliable: true
-    });
+    // Connect without legacy reliable option to avoid handshake hangs
+    const connection = peerRef.current.connect(destId);
     setupConnection(connection);
   };
 
