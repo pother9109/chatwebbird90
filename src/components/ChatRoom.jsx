@@ -1,36 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Send, Paperclip, Shield, Flame, LogOut, Copy, Check, 
-  Hourglass, FileText, Download, CheckCheck, HelpCircle, Eye, EyeOff, AlertCircle, Lock, Smile
+  Hourglass, FileText, Download, Eye, EyeOff, AlertCircle, Smile
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
-
-const STICKER_PACKS = {
-  Google: [
-    { id: 'ghost', url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f47b/512.webp', alt: '👻' },
-    { id: 'alien', url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f47d/512.webp', alt: '👽' },
-    { id: 'fire_heart', url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/2764_fe0f_200d_1f525/512.webp', alt: '❤️‍🔥' },
-    { id: 'party', url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f389/512.webp', alt: '🎉' },
-    { id: 'explode', url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f92f/512.webp', alt: '🤯' },
-    { id: 'joy', url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f602/512.webp', alt: '😂' },
-    { id: 'smirk', url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f60f/512.webp', alt: '😏' },
-    { id: 'nerd', url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f913/512.webp', alt: '🤓' },
-    { id: 'think', url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f914/512.webp', alt: '🤔' },
-    { id: 'skull', url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f480/512.webp', alt: '💀' },
-    { id: 'rocket', url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f680/512.webp', alt: '🚀' },
-    { id: 'fire', url: 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f525/512.webp', alt: '🔥' },
-  ],
-  Fluent3D: [
-    { id: 'ghost_3d', url: 'https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Smilies/Ghost.png', alt: '👻' },
-    { id: 'alien_3d', url: 'https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Smilies/Alien%20Monster.png', alt: '👾' },
-    { id: 'clown_3d', url: 'https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Smilies/Clown%20Face.png', alt: '🤡' },
-    { id: 'unicorn_3d', url: 'https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Animals/Unicorn.png', alt: '🦄' },
-    { id: 'panda_3d', url: 'https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Animals/Panda.png', alt: '🐼' },
-    { id: 'crystal_3d', url: 'https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Objects/Crystal%20Ball.png', alt: '🔮' },
-    { id: 'cat_3d', url: 'https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Animals/Cat%20Face.png', alt: '🐱' },
-    { id: 'money_3d', url: 'https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Activities/Money%20Bag.png', alt: '💰' },
-  ]
-};
+import { STICKER_PACKS } from '../constants/stickers.js';
+import { formatBytes } from '../utils/formatBytes.js';
+import InviteQr from './common/InviteQr.jsx';
 
 // Simple synthesizer for audio feedback without external assets
 const playTone = (freq, type, duration) => {
@@ -50,15 +26,6 @@ const playTone = (freq, type, duration) => {
     // Audio context blocked or not supported
   }
 };
-
-// Formatter for file size
-function formatBytes(bytes) {
-  if (bytes === 0) return '0 Bytes';
-  const k = 1024;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-}
 
 // Disappearing message wrapper component to handle countdown timers safely
 function DisappearingMessage({ message, onExpire, onBurn }) {
@@ -460,7 +427,6 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
   const isTypingRef = useRef(false);
 
   const inviteLink = `${window.location.origin}/?room=${roomId}&join=true`;
-  const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&color=255-255-255&bgcolor=10-15-30&data=${encodeURIComponent(inviteLink)}`;
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -677,6 +643,7 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <Hourglass size={16} style={{ color: destructTimer > 0 ? 'var(--color-accent)' : 'var(--text-muted)' }} />
                 <select
+                  aria-label="Temporizador de autodestruccion"
                   value={destructTimer}
                   onChange={(e) => setDestructTimer(Number(e.target.value))}
                   style={{
@@ -718,6 +685,7 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
                   fontWeight: 600
                 }}
                 title="Quemar historial para ambos"
+                aria-label="Quemar historial para ambos"
               >
                 <Flame size={14} />
                 Quemar
@@ -728,6 +696,7 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
             <button
               onClick={onLeave}
               className="btn-glass"
+              aria-label="Salir de la sala"
               style={{
                 padding: '8px 12px',
                 borderRadius: '10px',
@@ -791,16 +760,7 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
                     background: 'rgba(255, 255, 255, 0.02)',
                     boxShadow: '0 4px 20px rgba(0,0,0,0.2)'
                   }}>
-                    <img 
-                      src={qrCodeUrl} 
-                      alt="Código QR de invitación" 
-                      style={{ 
-                        width: '140px', 
-                        height: '140px', 
-                        borderRadius: '8px',
-                        display: 'block' 
-                      }} 
-                    />
+                    <InviteQr value={inviteLink} alt="Codigo QR de invitacion" />
                   </div>
                 </div>
 
@@ -810,6 +770,7 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
                     type="text"
                     readOnly
                     value={inviteLink}
+                    aria-label="Enlace de invitacion privada"
                     className="glass-input"
                     style={{ fontSize: '0.85rem', fontFamily: 'monospace', textOverflow: 'ellipsis' }}
                     onClick={(e) => e.target.select()}
@@ -817,6 +778,7 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
                   <button
                     onClick={handleCopyLink}
                     className="btn-glow"
+                    aria-label="Copiar enlace de invitacion"
                     style={{ padding: '0 18px', borderRadius: '12px', flexShrink: 0 }}
                   >
                     {copied ? <Check size={16} /> : <Copy size={16} />}
@@ -974,6 +936,8 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
                     <button 
                       type="button"
                       onClick={() => setViewOnceChecked(!viewOnceChecked)}
+                      aria-pressed={viewOnceChecked}
+                      aria-label="Alternar foto de un solo uso"
                       style={{ 
                         display: 'inline-flex', 
                         alignItems: 'center', 
@@ -1001,6 +965,7 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
                       setViewOnceChecked(false);
                     }}
                     type="button"
+                    aria-label="Cancelar archivo adjunto"
                     style={{
                       background: 'rgba(239, 68, 68, 0.1)',
                       border: '1px solid rgba(239, 68, 68, 0.2)',
@@ -1042,6 +1007,7 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
                   <span style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-secondary)' }}>Galería de Stickers</span>
                   <button 
                     onClick={() => setStickerPickerOpen(false)}
+                    aria-label="Cerrar stickers"
                     style={{
                       background: 'none',
                       border: 'none',
@@ -1070,6 +1036,7 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
                         <button
                           key={sticker.id}
                           type="button"
+                          aria-label={`Enviar sticker ${sticker.id}`}
                           onClick={() => {
                             sendSticker(sticker.url, destructTimer > 0 ? destructTimer : null);
                           }}
@@ -1118,12 +1085,14 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
                 type="file" 
                 ref={fileInputRef} 
                 onChange={handleFileUpload} 
+                aria-label="Adjuntar archivo"
                 style={{ display: 'none' }} 
               />
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 className="btn-glass flex-center"
+                aria-label="Adjuntar archivo P2P"
                 style={{ 
                   width: '46px', 
                   height: '46px', 
@@ -1142,6 +1111,8 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
                 type="button"
                 onClick={() => setStickerPickerOpen(!stickerPickerOpen)}
                 className="btn-glass flex-center"
+                aria-label={stickerPickerOpen ? 'Cerrar stickers' : 'Abrir stickers'}
+                aria-expanded={stickerPickerOpen}
                 style={{ 
                   width: '46px', 
                   height: '46px', 
@@ -1162,6 +1133,7 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
                 type="text"
                 placeholder="Escribe un mensaje de forma segura..."
                 className="glass-input"
+                aria-label="Mensaje privado"
                 value={inputText}
                 onChange={(e) => {
                   setInputText(e.target.value);
@@ -1177,6 +1149,7 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
                 type="submit"
                 disabled={!inputText.trim() && !pendingFile}
                 className="btn-glow flex-center"
+                aria-label="Enviar mensaje"
                 style={{ 
                   width: '46px', 
                   height: '46px', 

@@ -1,5 +1,5 @@
 import React from 'react';
-import { AlertCircle, RefreshCw, Home } from 'lucide-react';
+import { Home } from 'lucide-react';
 
 export default class ErrorBoundary extends React.Component {
   constructor(props) {

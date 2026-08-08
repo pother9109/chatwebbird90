@@ -1,5 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import Peer from 'peerjs';
+import { createPeerOptions } from '../config/peerConfig.js';
+import {
+  MAX_P2P_FILE_SIZE,
+  createFileId,
+  createFileStartPayload,
+  createIncomingFileMessage,
+  createLocalFileMessage,
+  acceptIncomingFileChunk,
+  sendFileChunks,
+  startIncomingFileTransfer
+} from '../utils/fileTransfer.js';
 
 export default function usePeer(roomId) {
   const [peerId, setPeerId] = useState(null);
@@ -14,6 +25,7 @@ export default function usePeer(roomId) {
   const connRef = useRef(null);
   const retryCountRef = useRef(0);
   const isHostRef = useRef(true);
+  const incomingFilesRef = useRef(new Map());
 
   // Helper to add messages to local state
   const addMessage = (msg) => {
@@ -34,24 +46,10 @@ export default function usePeer(roomId) {
     isHostRef.current = host;
     retryCountRef.current = 0;
 
-    const peerOptions = {
-      debug: 1,
-      config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' },
-          { urls: 'stun:stun3.l.google.com:19302' },
-          { urls: 'stun:stun4.l.google.com:19302' },
-          { urls: 'stun:global.stun.twilio.com:3478' }
-        ]
-      }
-    };
-
     // If host, attempt to use roomId as the Peer ID.
     // If guest, PeerJS generates a random ID, and we connect to the host's roomId.
     const peerIdToUse = host ? roomId : null;
-    const peer = new Peer(peerIdToUse, peerOptions);
+    const peer = new Peer(peerIdToUse, createPeerOptions());
     peerRef.current = peer;
 
     peer.on('open', (id) => {
@@ -191,6 +189,18 @@ export default function usePeer(roomId) {
             timestamp: data.timestamp
           });
           break;
+        case 'file_start':
+          startIncomingFileTransfer(incomingFilesRef.current, data);
+          break;
+        case 'file_chunk': {
+          const completedTransfer = acceptIncomingFileChunk(incomingFilesRef.current, data);
+          if (completedTransfer) {
+            addMessage(createIncomingFileMessage(completedTransfer, 'peer'));
+          }
+          break;
+        }
+        case 'file_end':
+          break;
         case 'typing':
           setIsPeerTyping(data.isTyping);
           break;
@@ -283,10 +293,9 @@ export default function usePeer(roomId) {
   // Send binary file safely
   const sendFile = async (file, timer, viewOnce) => {
     if (!connRef.current || !isConnected) return;
-
+    
     // Enforce a 15MB size limit to prevent WebRTC data channel buffer overflow crashes
-    const MAX_FILE_SIZE = 15 * 1024 * 1024; // 15MB
-    if (file.size > MAX_FILE_SIZE) {
+    if (file.size > MAX_P2P_FILE_SIZE) {
       addMessage({
         id: 'system-err-' + Date.now(),
         sender: 'system',
@@ -297,63 +306,31 @@ export default function usePeer(roomId) {
       return;
     }
 
-    const msgId = 'file-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now();
+    const msgId = createFileId('file');
+    const timestamp = Date.now();
+    const startPayload = createFileStartPayload({
+      id: msgId,
+      file,
+      timer,
+      viewOnce,
+      timestamp
+    });
     
     try {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        try {
-          const arrayBuffer = event.target.result;
-          const payload = {
-            id: msgId,
-            type: 'file',
-            arrayBuffer: arrayBuffer,
-            name: file.name,
-            mime: file.type,
-            size: file.size,
-            timer: timer || null,
-            viewOnce: viewOnce || false,
-            timestamp: Date.now()
-          };
+      addMessage(createLocalFileMessage({
+        id: msgId,
+        file,
+        timer,
+        viewOnce,
+        timestamp
+      }));
 
-          connRef.current.send(payload);
-
-          addMessage({
-            id: msgId,
-            sender: 'me',
-            type: 'file',
-            fileBlob: file,
-            fileName: file.name,
-            fileType: file.type,
-            fileSize: file.size,
-            timer: timer || null,
-            viewOnce: viewOnce || false,
-            timestamp: Date.now()
-          });
-        } catch (sendErr) {
-          console.error('Error serializing/sending file payload:', sendErr);
-          addMessage({
-            id: 'system-err-' + Date.now(),
-            sender: 'system',
-            type: 'status',
-            content: `Error al enviar "${file.name}": El navegador no pudo serializar el archivo.`,
-            timestamp: Date.now()
-          });
+      await sendFileChunks(file, startPayload, (payload) => {
+        if (!connRef.current || !connRef.current.open) {
+          throw new Error('La conexión P2P se cerró durante el envío.');
         }
-      };
-      
-      reader.onerror = (readErr) => {
-        console.error('FileReader error:', readErr);
-        addMessage({
-          id: 'system-err-' + Date.now(),
-          sender: 'system',
-          type: 'status',
-          content: `Error al leer "${file.name}" del disco.`,
-          timestamp: Date.now()
-        });
-      };
-
-      reader.readAsArrayBuffer(file);
+        connRef.current.send(payload);
+      });
     } catch (err) {
       console.error('Exception in sendFile outer block:', err);
       addMessage({
@@ -403,6 +380,7 @@ export default function usePeer(roomId) {
   // Disconnect from current room
   const disconnect = () => {
     console.log('Disconnecting and cleaning peer resources');
+    incomingFilesRef.current.clear();
     if (connRef.current) {
       connRef.current.close();
       connRef.current = null;
@@ -434,4 +412,3 @@ export default function usePeer(roomId) {
     disconnect
   };
 }
-
