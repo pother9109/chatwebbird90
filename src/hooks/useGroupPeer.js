@@ -39,6 +39,10 @@ export function useGroupPeer(roomId, userNickname) {
   const myNicknameRef = useRef(userNickname || 'Anónimo');
   const myColorRef = useRef(getRandomColor());
 
+  const isTransientPeerError = (err) => {
+    return ['network', 'socket-error', 'socket-closed', 'disconnected', 'server-error'].includes(err?.type);
+  };
+
   // Helper to append message locally
   const addMessage = (msg) => {
     setMessages((prev) => [...prev, msg]);
@@ -98,9 +102,29 @@ export function useGroupPeer(roomId, userNickname) {
     const peer = new Peer(peerIdToUse, createPeerOptions());
     peerRef.current = peer;
 
+    const resumePeerConnection = () => {
+      const currentPeer = peerRef.current;
+      if (!currentPeer || currentPeer.destroyed) return;
+
+      if (currentPeer.disconnected) {
+        setError(null);
+        setIsConnecting(true);
+        try {
+          currentPeer.reconnect();
+        } catch (err) {
+          console.warn('Group peer reconnect failed:', err);
+        }
+      }
+
+      if (!host && currentPeer.open && (!hostConnRef.current || !hostConnRef.current.open)) {
+        connectToHost(roomId);
+      }
+    };
+
     peer.on('open', (id) => {
       setPeerId(id);
       setIsConnecting(true);
+      setError(null);
 
       if (host) {
         setIsConnected(true);
@@ -244,6 +268,10 @@ export function useGroupPeer(roomId, userNickname) {
         setError('El ID de sala grupal ya está en uso. Intenta crear una nueva sala.');
       } else if (err.type === 'peer-unavailable') {
         setError('No se pudo encontrar la sala grupal. Verifica que el anfitrión siga en la sala.');
+      } else if (isTransientPeerError(err)) {
+        setError(null);
+        setIsConnecting(true);
+        return;
       } else {
         setError('Error en el grupo: ' + err.message);
       }
@@ -251,7 +279,28 @@ export function useGroupPeer(roomId, userNickname) {
       setIsConnected(false);
     });
 
+    peer.on('disconnected', () => {
+      console.warn('Group PeerJS signaling disconnected; will resume when the tab is active.');
+      setError(null);
+      setIsConnecting(true);
+    });
+
+    const handleVisibilityResume = () => {
+      if (document.visibilityState === 'visible') {
+        resumePeerConnection();
+      }
+    };
+
+    const handlePageShow = () => {
+      resumePeerConnection();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityResume);
+    window.addEventListener('pageshow', handlePageShow);
+
     return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityResume);
+      window.removeEventListener('pageshow', handlePageShow);
       disconnect();
     };
   }, [roomId]);

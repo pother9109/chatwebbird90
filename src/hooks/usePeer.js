@@ -27,6 +27,10 @@ export default function usePeer(roomId) {
   const isHostRef = useRef(true);
   const incomingFilesRef = useRef(new Map());
 
+  const isTransientPeerError = (err) => {
+    return ['network', 'socket-error', 'socket-closed', 'disconnected', 'server-error'].includes(err?.type);
+  };
+
   // Helper to add messages to local state
   const addMessage = (msg) => {
     setMessages((prev) => [...prev, msg]);
@@ -52,9 +56,29 @@ export default function usePeer(roomId) {
     const peer = new Peer(peerIdToUse, createPeerOptions());
     peerRef.current = peer;
 
+    const resumePeerConnection = () => {
+      const currentPeer = peerRef.current;
+      if (!currentPeer || currentPeer.destroyed) return;
+
+      if (currentPeer.disconnected) {
+        setError(null);
+        setIsConnecting(true);
+        try {
+          currentPeer.reconnect();
+        } catch (err) {
+          console.warn('Peer reconnect failed:', err);
+        }
+      }
+
+      if (!host && currentPeer.open && (!connRef.current || !connRef.current.open)) {
+        connectToPeer(roomId);
+      }
+    };
+
     peer.on('open', (id) => {
       setPeerId(id);
       setIsConnecting(true);
+      setError(null);
 
       // If we are the guest, automatically connect to the host
       if (!host) {
@@ -96,6 +120,9 @@ export default function usePeer(roomId) {
           setIsConnecting(false);
           setIsConnected(false);
         }
+      } else if (isTransientPeerError(err)) {
+        setError(null);
+        setIsConnecting(true);
       } else {
         setError('Error de comunicación: ' + err.message);
         setIsConnecting(false);
@@ -103,7 +130,28 @@ export default function usePeer(roomId) {
       }
     });
 
+    peer.on('disconnected', () => {
+      console.warn('PeerJS signaling disconnected; will resume when the tab is active.');
+      setError(null);
+      setIsConnecting(true);
+    });
+
+    const handleVisibilityResume = () => {
+      if (document.visibilityState === 'visible') {
+        resumePeerConnection();
+      }
+    };
+
+    const handlePageShow = () => {
+      resumePeerConnection();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityResume);
+    window.addEventListener('pageshow', handlePageShow);
+
     return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityResume);
+      window.removeEventListener('pageshow', handlePageShow);
       disconnect();
     };
   }, [roomId]);
