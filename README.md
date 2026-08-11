@@ -18,6 +18,8 @@ En PowerShell, usa `npm.cmd` si `npm` queda bloqueado por la politica local de e
 - La app no usa base de datos ni backend propio.
 - PeerJS requiere un servidor de senalizacion y servidores STUN/TURN para establecer conexiones WebRTC.
 - Para produccion, conviene configurar TURN propio, generar el QR localmente y revisar los textos de privacidad para que coincidan exactamente con la arquitectura real.
+- Para probar entre dos PCs en local, no compartas un enlace con `127.0.0.1`; usa la IP LAN del equipo anfitrion o despliega la app en un dominio HTTPS.
+- Si dos PCs estan en redes distintas y aparece error de conexion P2P, configura `VITE_ICE_SERVERS_JSON` con un servidor TURN. STUN no siempre atraviesa NAT/firewalls restrictivos.
 
 ## Assets locales
 

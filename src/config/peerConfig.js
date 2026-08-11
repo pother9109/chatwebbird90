@@ -20,6 +20,17 @@ function readIceServers() {
   }
 }
 
+function serverUrls(server) {
+  if (!server?.urls) return [];
+  return Array.isArray(server.urls) ? server.urls : [server.urls];
+}
+
+export function hasConfiguredTurnServer() {
+  return readIceServers().some((server) => {
+    return serverUrls(server).some((url) => String(url).toLowerCase().startsWith('turn:') || String(url).toLowerCase().startsWith('turns:'));
+  });
+}
+
 export function createPeerOptions() {
   const debugLevel = Number.parseInt(import.meta.env.VITE_PEER_DEBUG ?? '0', 10);
   const options = {

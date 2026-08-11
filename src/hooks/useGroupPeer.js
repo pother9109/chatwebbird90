@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import Peer from 'peerjs';
-import { createPeerOptions } from '../config/peerConfig.js';
+import { createPeerOptions, hasConfiguredTurnServer } from '../config/peerConfig.js';
 import {
   MAX_P2P_FILE_SIZE,
   createFileId,
@@ -97,6 +97,13 @@ export function useGroupPeer(roomId, userNickname) {
       if (!shouldReconnectRef.current || !isHostRef.current) return;
       setPeerRestartNonce((value) => value + 1);
     }, delay);
+  };
+
+  const getP2PFailureReason = () => {
+    if (hasConfiguredTurnServer()) {
+      return 'La conexion grupal fallo.';
+    }
+    return 'No se pudo abrir el canal P2P grupal. En PCs con redes o firewalls distintos necesitas configurar un servidor TURN.';
   };
 
   // Broadcast message from Host to all connected guests (except optional skipPeerId)
@@ -204,8 +211,11 @@ export function useGroupPeer(roomId, userNickname) {
     // HOST ONLY: Handle incoming connections from guests
     peer.on('connection', (conn) => {
       console.log('Host received group connection from:', conn.peer);
+      let setupHandled = false;
 
       const setupGuestConn = () => {
+        if (setupHandled) return;
+        setupHandled = true;
         connectionsRef.current.set(conn.peer, {
           conn,
           nickname: 'Conectando...',
@@ -394,6 +404,7 @@ export function useGroupPeer(roomId, userNickname) {
 
     const conn = peerRef.current.connect(hostId);
     hostConnRef.current = conn;
+    let openHandled = false;
 
     const openPoll = setInterval(() => {
       if (conn.open) {
@@ -403,6 +414,8 @@ export function useGroupPeer(roomId, userNickname) {
     }, 200);
 
     const onHostConnOpen = () => {
+      if (openHandled || hostConnRef.current !== conn) return;
+      openHandled = true;
       clearInterval(openPoll);
       setIsConnected(true);
       setIsConnecting(false);
@@ -511,6 +524,8 @@ export function useGroupPeer(roomId, userNickname) {
     });
 
     conn.on('close', () => {
+      clearInterval(openPoll);
+      if (hostConnRef.current !== conn) return;
       setIsConnected(false);
       setIsConnecting(true);
       hostConnRef.current = null;
@@ -524,10 +539,12 @@ export function useGroupPeer(roomId, userNickname) {
 
     conn.on('error', (err) => {
       console.error('Group host connection error:', err);
+      clearInterval(openPoll);
+      if (hostConnRef.current !== conn) return;
       setIsConnected(false);
       setIsConnecting(true);
       if (shouldReconnectRef.current && !isHostRef.current) {
-        scheduleGuestReconnect('La conexion grupal fallo.');
+        scheduleGuestReconnect(getP2PFailureReason());
       }
     });
   };

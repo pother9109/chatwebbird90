@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import Peer from 'peerjs';
-import { createPeerOptions } from '../config/peerConfig.js';
+import { createPeerOptions, hasConfiguredTurnServer } from '../config/peerConfig.js';
 import {
   MAX_P2P_FILE_SIZE,
   createFileId,
@@ -89,6 +89,13 @@ export default function usePeer(roomId) {
       if (!shouldReconnectRef.current || !isHostRef.current) return;
       setPeerRestartNonce((value) => value + 1);
     }, delay);
+  };
+
+  const getP2PFailureReason = () => {
+    if (hasConfiguredTurnServer()) {
+      return 'La conexion P2P fallo.';
+    }
+    return 'No se pudo abrir el canal P2P directo. En PCs con redes o firewalls distintos necesitas configurar un servidor TURN.';
   };
 
   // Initialize PeerJS
@@ -221,8 +228,11 @@ export default function usePeer(roomId) {
   const setupConnection = (connection) => {
     connRef.current = connection;
     setIsConnecting(true);
+    let openHandled = false;
 
     const onOpen = () => {
+      if (openHandled || connRef.current !== connection) return;
+      openHandled = true;
       console.log('Data channel connected successfully!');
       setIsConnected(true);
       setIsConnecting(false);
@@ -324,6 +334,7 @@ export default function usePeer(roomId) {
     connection.on('close', () => {
       console.log('Connection closed');
       clearInterval(openCheckInterval);
+      if (connRef.current !== connection) return;
       setIsConnected(false);
       setIsConnecting(!isHostRef.current);
       addMessage({
@@ -342,10 +353,11 @@ export default function usePeer(roomId) {
     connection.on('error', (err) => {
       console.error('Connection error:', err);
       clearInterval(openCheckInterval);
+      if (connRef.current !== connection) return;
       setIsConnected(false);
       setIsConnecting(!isHostRef.current);
       if (!isHostRef.current && shouldReconnectRef.current) {
-        scheduleGuestReconnect('La conexion P2P fallo.');
+        scheduleGuestReconnect(getP2PFailureReason());
       }
     });
   };
