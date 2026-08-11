@@ -11,6 +11,7 @@ import {
   sendFileChunks,
   startIncomingFileTransfer
 } from '../utils/fileTransfer.js';
+import { clearRetryTimer, getRetryDelay, isTransientPeerError } from '../utils/peerRecovery.js';
 
 const PASTEL_COLORS = [
   '#8B5CF6', '#06B6D4', '#EC4899', '#10B981', 
@@ -28,6 +29,7 @@ export function useGroupPeer(roomId, userNickname) {
   const [messages, setMessages] = useState([]);
   const [typingUsers, setTypingUsers] = useState(new Set());
   const [members, setMembers] = useState([]);
+  const [peerRestartNonce, setPeerRestartNonce] = useState(0);
 
   // Host stores all guest connections: Map<peerId, { conn, nickname, color }>
   const connectionsRef = useRef(new Map());
@@ -35,17 +37,66 @@ export function useGroupPeer(roomId, userNickname) {
   const hostConnRef = useRef(null);
   const peerRef = useRef(null);
   const isHostRef = useRef(false);
+  const shouldReconnectRef = useRef(false);
+  const roomIdRef = useRef(null);
+  const retryCountRef = useRef(0);
+  const reconnectTimerRef = useRef(null);
+  const hostRecoveryTimerRef = useRef(null);
   const incomingFilesRef = useRef(new Map());
   const myNicknameRef = useRef(userNickname || 'Anónimo');
   const myColorRef = useRef(getRandomColor());
 
-  const isTransientPeerError = (err) => {
-    return ['network', 'socket-error', 'socket-closed', 'disconnected', 'server-error'].includes(err?.type);
-  };
-
   // Helper to append message locally
   const addMessage = (msg) => {
     setMessages((prev) => [...prev, msg]);
+  };
+
+  const closeHostConnection = () => {
+    if (hostConnRef.current) {
+      hostConnRef.current.close();
+      hostConnRef.current = null;
+    }
+  };
+
+  const scheduleGuestReconnect = (reason = 'Esperando al anfitrion de la sala...') => {
+    if (!roomIdRef.current || isHostRef.current || !shouldReconnectRef.current) return;
+
+    clearRetryTimer(reconnectTimerRef);
+    const nextAttempt = retryCountRef.current + 1;
+    retryCountRef.current = nextAttempt;
+    const delay = getRetryDelay(nextAttempt);
+
+    setIsConnected(false);
+    setIsConnecting(true);
+    setError(`${reason} Reintentando en ${Math.ceil(delay / 1000)}s.`);
+
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      if (!shouldReconnectRef.current || isHostRef.current) return;
+      if (!peerRef.current || peerRef.current.destroyed) return;
+      if (!peerRef.current.open) return;
+      if (hostConnRef.current?.open) return;
+      connectToHost(roomIdRef.current);
+    }, delay);
+  };
+
+  const scheduleHostRestart = (reason = 'Recuperando la sala grupal...') => {
+    if (!roomIdRef.current || !isHostRef.current || !shouldReconnectRef.current) return;
+
+    clearRetryTimer(hostRecoveryTimerRef);
+    const nextAttempt = retryCountRef.current + 1;
+    retryCountRef.current = nextAttempt;
+    const delay = getRetryDelay(nextAttempt, { baseMs: 1000, maxMs: 8000 });
+
+    setIsConnected(false);
+    setIsConnecting(true);
+    setError(`${reason} Reintentando en ${Math.ceil(delay / 1000)}s.`);
+
+    hostRecoveryTimerRef.current = setTimeout(() => {
+      hostRecoveryTimerRef.current = null;
+      if (!shouldReconnectRef.current || !isHostRef.current) return;
+      setPeerRestartNonce((value) => value + 1);
+    }, delay);
   };
 
   // Broadcast message from Host to all connected guests (except optional skipPeerId)
@@ -97,6 +148,9 @@ export function useGroupPeer(roomId, userNickname) {
     const host = !window.location.search.includes('join=true');
     setIsHost(host);
     isHostRef.current = host;
+    shouldReconnectRef.current = true;
+    roomIdRef.current = roomId;
+    retryCountRef.current = 0;
 
     const peerIdToUse = host ? roomId : null;
     const peer = new Peer(peerIdToUse, createPeerOptions());
@@ -104,7 +158,10 @@ export function useGroupPeer(roomId, userNickname) {
 
     const resumePeerConnection = () => {
       const currentPeer = peerRef.current;
-      if (!currentPeer || currentPeer.destroyed) return;
+      if (!currentPeer || currentPeer.destroyed) {
+        if (host) scheduleHostRestart('La sala grupal necesita reabrirse.');
+        return;
+      }
 
       if (currentPeer.disconnected) {
         setError(null);
@@ -117,7 +174,7 @@ export function useGroupPeer(roomId, userNickname) {
       }
 
       if (!host && currentPeer.open && (!hostConnRef.current || !hostConnRef.current.open)) {
-        connectToHost(roomId);
+        scheduleGuestReconnect('Reanudando la conexion con la sala grupal.');
       }
     };
 
@@ -125,6 +182,7 @@ export function useGroupPeer(roomId, userNickname) {
       setPeerId(id);
       setIsConnecting(true);
       setError(null);
+      retryCountRef.current = 0;
 
       if (host) {
         setIsConnected(true);
@@ -264,25 +322,42 @@ export function useGroupPeer(roomId, userNickname) {
 
     peer.on('error', (err) => {
       console.error('Group PeerJS error:', err.type, err);
+
       if (err.type === 'unavailable-id') {
-        setError('El ID de sala grupal ya está en uso. Intenta crear una nueva sala.');
+        if (isHostRef.current) {
+          scheduleHostRestart('La sala grupal sigue registrada temporalmente en la red.');
+        } else {
+          scheduleGuestReconnect('La sala grupal aun se esta preparando.');
+        }
       } else if (err.type === 'peer-unavailable') {
-        setError('No se pudo encontrar la sala grupal. Verifica que el anfitrión siga en la sala.');
+        if (!isHostRef.current) {
+          scheduleGuestReconnect('Esperando a que el anfitrion mantenga abierta la sala grupal.');
+        } else {
+          setError('No se pudo encontrar la sala grupal.');
+          setIsConnecting(false);
+          setIsConnected(false);
+        }
       } else if (isTransientPeerError(err)) {
         setError(null);
         setIsConnecting(true);
-        return;
+        if (isHostRef.current) {
+          scheduleHostRestart('La senalizacion de la sala grupal se interrumpio.');
+        } else {
+          scheduleGuestReconnect('La senalizacion grupal se interrumpio.');
+        }
       } else {
         setError('Error en el grupo: ' + err.message);
+        setIsConnecting(false);
+        setIsConnected(false);
       }
-      setIsConnecting(false);
-      setIsConnected(false);
     });
-
     peer.on('disconnected', () => {
       console.warn('Group PeerJS signaling disconnected; will resume when the tab is active.');
       setError(null);
       setIsConnecting(true);
+      if (host) {
+        scheduleHostRestart('La sala grupal se desconecto temporalmente.');
+      }
     });
 
     const handleVisibilityResume = () => {
@@ -299,15 +374,22 @@ export function useGroupPeer(roomId, userNickname) {
     window.addEventListener('pageshow', handlePageShow);
 
     return () => {
+      shouldReconnectRef.current = false;
+      clearRetryTimer(reconnectTimerRef);
+      clearRetryTimer(hostRecoveryTimerRef);
       document.removeEventListener('visibilitychange', handleVisibilityResume);
       window.removeEventListener('pageshow', handlePageShow);
       disconnect();
     };
-  }, [roomId]);
+  }, [roomId, peerRestartNonce]);
 
   // GUEST ONLY: Connect to Host
   const connectToHost = (hostId) => {
     if (!peerRef.current || peerRef.current.destroyed) return;
+    clearRetryTimer(reconnectTimerRef);
+    if (hostConnRef.current && !hostConnRef.current.open) {
+      closeHostConnection();
+    }
     setIsConnecting(true);
 
     const conn = peerRef.current.connect(hostId);
@@ -430,8 +512,23 @@ export function useGroupPeer(roomId, userNickname) {
 
     conn.on('close', () => {
       setIsConnected(false);
-      setIsConnecting(false);
-      setError('El anfitrión cerró la sala grupal.');
+      setIsConnecting(true);
+      hostConnRef.current = null;
+      if (shouldReconnectRef.current && !isHostRef.current) {
+        scheduleGuestReconnect('Se perdio la conexion con el anfitrion grupal.');
+      } else {
+        setError('El anfitrion cerro la sala grupal.');
+        setIsConnecting(false);
+      }
+    });
+
+    conn.on('error', (err) => {
+      console.error('Group host connection error:', err);
+      setIsConnected(false);
+      setIsConnecting(true);
+      if (shouldReconnectRef.current && !isHostRef.current) {
+        scheduleGuestReconnect('La conexion grupal fallo.');
+      }
     });
   };
 
@@ -579,6 +676,10 @@ export function useGroupPeer(roomId, userNickname) {
   };
 
   const disconnect = () => {
+    shouldReconnectRef.current = false;
+    roomIdRef.current = null;
+    clearRetryTimer(reconnectTimerRef);
+    clearRetryTimer(hostRecoveryTimerRef);
     incomingFilesRef.current.clear();
     if (hostConnRef.current) {
       hostConnRef.current.close();

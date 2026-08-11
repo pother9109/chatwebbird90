@@ -38,6 +38,7 @@ export default function GroupChatRoom({ roomId, groupPeerState, onLeave }) {
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const inviteLink = `${window.location.origin}/?room=${roomId}&mode=group&join=true`;
+  const recoverableStatus = Boolean(error && isConnecting);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -160,7 +161,7 @@ export default function GroupChatRoom({ roomId, groupPeerState, onLeave }) {
               👥
             </div>
 
-            {error ? (
+            {error && !recoverableStatus ? (
               <div style={{ maxWidth: '450px' }}>
                 <h3 style={{ color: 'var(--color-danger)', fontSize: '1.25rem', marginBottom: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
                   <AlertCircle /> Error en el Grupo
@@ -171,6 +172,11 @@ export default function GroupChatRoom({ roomId, groupPeerState, onLeave }) {
             ) : isHost ? (
               <div className="fade-in" style={{ maxWidth: '500px', width: '100%' }}>
                 <h3 style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: '8px' }}>Esperando integrantes...</h3>
+                {recoverableStatus && (
+                  <p style={{ color: 'var(--color-secondary)', fontSize: '0.85rem', marginBottom: '14px', fontWeight: 600 }}>
+                    {error}
+                  </p>
+                )}
                 <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '25px' }}>
                   Comparte este enlace o código QR para que múltiples personas se unan a la sala grupal P2P.
                 </p>
@@ -193,6 +199,11 @@ export default function GroupChatRoom({ roomId, groupPeerState, onLeave }) {
               <div className="fade-in" style={{ maxWidth: '500px', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                 <div style={{ width: '50px', height: '50px', borderRadius: '50%', border: '3px solid rgba(6, 182, 212, 0.1)', borderTopColor: 'var(--color-secondary)', animation: 'spin 1s linear infinite', marginBottom: '20px' }} />
                 <h3 style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: '8px' }}>Ingresando a la sala grupal...</h3>
+                {recoverableStatus && (
+                  <p style={{ color: 'var(--color-secondary)', fontSize: '0.85rem', marginBottom: '14px', fontWeight: 600 }}>
+                    {error}
+                  </p>
+                )}
                 <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '30px' }}>
                   Conectando con el anfitrión de la sala y sincronizando integrantes.
                 </p>

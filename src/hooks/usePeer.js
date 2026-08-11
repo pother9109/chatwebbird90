@@ -11,6 +11,7 @@ import {
   sendFileChunks,
   startIncomingFileTransfer
 } from '../utils/fileTransfer.js';
+import { clearRetryTimer, getRetryDelay, isTransientPeerError } from '../utils/peerRecovery.js';
 
 export default function usePeer(roomId) {
   const [peerId, setPeerId] = useState(null);
@@ -20,16 +21,17 @@ export default function usePeer(roomId) {
   const [isPeerTyping, setIsPeerTyping] = useState(false);
   const [error, setError] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [peerRestartNonce, setPeerRestartNonce] = useState(0);
   
   const peerRef = useRef(null);
   const connRef = useRef(null);
   const retryCountRef = useRef(0);
+  const reconnectTimerRef = useRef(null);
+  const hostRecoveryTimerRef = useRef(null);
+  const shouldReconnectRef = useRef(false);
+  const roomIdRef = useRef(null);
   const isHostRef = useRef(true);
   const incomingFilesRef = useRef(new Map());
-
-  const isTransientPeerError = (err) => {
-    return ['network', 'socket-error', 'socket-closed', 'disconnected', 'server-error'].includes(err?.type);
-  };
 
   // Helper to add messages to local state
   const addMessage = (msg) => {
@@ -41,6 +43,54 @@ export default function usePeer(roomId) {
     setMessages([]);
   };
 
+  const closeCurrentConnection = () => {
+    if (connRef.current) {
+      connRef.current.close();
+      connRef.current = null;
+    }
+  };
+
+  const scheduleGuestReconnect = (reason = 'Esperando al creador de la sala...') => {
+    if (!roomIdRef.current || isHostRef.current || !shouldReconnectRef.current) return;
+
+    clearRetryTimer(reconnectTimerRef);
+    const nextAttempt = retryCountRef.current + 1;
+    retryCountRef.current = nextAttempt;
+    const delay = getRetryDelay(nextAttempt);
+
+    setIsConnected(false);
+    setIsConnecting(true);
+    setError(`${reason} Reintentando en ${Math.ceil(delay / 1000)}s.`);
+
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      if (!shouldReconnectRef.current || isHostRef.current) return;
+      if (!peerRef.current || peerRef.current.destroyed) return;
+      if (!peerRef.current.open) return;
+      if (connRef.current?.open) return;
+      connectToPeer(roomIdRef.current);
+    }, delay);
+  };
+
+  const scheduleHostRestart = (reason = 'Recuperando la sala...') => {
+    if (!roomIdRef.current || !isHostRef.current || !shouldReconnectRef.current) return;
+
+    clearRetryTimer(hostRecoveryTimerRef);
+    const nextAttempt = retryCountRef.current + 1;
+    retryCountRef.current = nextAttempt;
+    const delay = getRetryDelay(nextAttempt, { baseMs: 1000, maxMs: 8000 });
+
+    setIsConnected(false);
+    setIsConnecting(true);
+    setError(`${reason} Reintentando en ${Math.ceil(delay / 1000)}s.`);
+
+    hostRecoveryTimerRef.current = setTimeout(() => {
+      hostRecoveryTimerRef.current = null;
+      if (!shouldReconnectRef.current || !isHostRef.current) return;
+      setPeerRestartNonce((value) => value + 1);
+    }, delay);
+  };
+
   // Initialize PeerJS
   useEffect(() => {
     if (!roomId) return;
@@ -48,6 +98,8 @@ export default function usePeer(roomId) {
     const host = !window.location.search.includes('join=true');
     setIsHost(host);
     isHostRef.current = host;
+    shouldReconnectRef.current = true;
+    roomIdRef.current = roomId;
     retryCountRef.current = 0;
 
     // If host, attempt to use roomId as the Peer ID.
@@ -58,7 +110,10 @@ export default function usePeer(roomId) {
 
     const resumePeerConnection = () => {
       const currentPeer = peerRef.current;
-      if (!currentPeer || currentPeer.destroyed) return;
+      if (!currentPeer || currentPeer.destroyed) {
+        if (host) scheduleHostRestart('La sala necesita reabrirse.');
+        return;
+      }
 
       if (currentPeer.disconnected) {
         setError(null);
@@ -71,7 +126,7 @@ export default function usePeer(roomId) {
       }
 
       if (!host && currentPeer.open && (!connRef.current || !connRef.current.open)) {
-        connectToPeer(roomId);
+        scheduleGuestReconnect('Reanudando la conexión con la sala.');
       }
     };
 
@@ -101,39 +156,42 @@ export default function usePeer(roomId) {
 
     peer.on('error', (err) => {
       console.error('PeerJS error:', err.type, err);
-      
+
       if (err.type === 'unavailable-id') {
-        setError('El ID de sala ya está en uso o expirando en la red. Intenta crear una nueva sala.');
-        setIsConnecting(false);
-      } else if (err.type === 'peer-unavailable') {
-        // If host isn't fully registered on the cloud signaling server yet, auto-retry
-        if (!isHostRef.current && retryCountRef.current < 5) {
-          retryCountRef.current += 1;
-          setError(`Buscando al creador de la sala... Reintentando (${retryCountRef.current}/5)`);
-          setTimeout(() => {
-            if (peerRef.current && !peerRef.current.destroyed) {
-              connectToPeer(roomId);
-            }
-          }, 1500);
+        if (isHostRef.current) {
+          scheduleHostRestart('La sala sigue registrada temporalmente en la red.');
         } else {
-          setError('No se pudo encontrar al creador de la sala. Asegúrate de que el enlace sea correcto y de que la sala del anfitrión siga abierta.');
+          scheduleGuestReconnect('La sala aun se esta preparando.');
+        }
+      } else if (err.type === 'peer-unavailable') {
+        if (!isHostRef.current) {
+          scheduleGuestReconnect('Esperando a que el creador mantenga abierta la sala.');
+        } else {
+          setError('No se pudo encontrar a la otra persona.');
           setIsConnecting(false);
           setIsConnected(false);
         }
       } else if (isTransientPeerError(err)) {
         setError(null);
         setIsConnecting(true);
+        if (isHostRef.current) {
+          scheduleHostRestart('La senalizacion de la sala se interrumpio.');
+        } else {
+          scheduleGuestReconnect('La senalizacion se interrumpio.');
+        }
       } else {
-        setError('Error de comunicación: ' + err.message);
+        setError('Error de comunicacion: ' + err.message);
         setIsConnecting(false);
         setIsConnected(false);
       }
     });
-
     peer.on('disconnected', () => {
       console.warn('PeerJS signaling disconnected; will resume when the tab is active.');
       setError(null);
       setIsConnecting(true);
+      if (host) {
+        scheduleHostRestart('La sala se desconecto temporalmente.');
+      }
     });
 
     const handleVisibilityResume = () => {
@@ -150,11 +208,14 @@ export default function usePeer(roomId) {
     window.addEventListener('pageshow', handlePageShow);
 
     return () => {
+      shouldReconnectRef.current = false;
+      clearRetryTimer(reconnectTimerRef);
+      clearRetryTimer(hostRecoveryTimerRef);
       document.removeEventListener('visibilitychange', handleVisibilityResume);
       window.removeEventListener('pageshow', handlePageShow);
       disconnect();
     };
-  }, [roomId]);
+  }, [roomId, peerRestartNonce]);
 
   // Set up connection listeners
   const setupConnection = (connection) => {
@@ -264,7 +325,7 @@ export default function usePeer(roomId) {
       console.log('Connection closed');
       clearInterval(openCheckInterval);
       setIsConnected(false);
-      setIsConnecting(false);
+      setIsConnecting(!isHostRef.current);
       addMessage({
         id: 'system-' + Date.now(),
         sender: 'system',
@@ -273,13 +334,19 @@ export default function usePeer(roomId) {
         timestamp: Date.now()
       });
       connRef.current = null;
+      if (!isHostRef.current && shouldReconnectRef.current) {
+        scheduleGuestReconnect('La conexion con la sala se cerro.');
+      }
     });
 
     connection.on('error', (err) => {
       console.error('Connection error:', err);
       clearInterval(openCheckInterval);
       setIsConnected(false);
-      setIsConnecting(false);
+      setIsConnecting(!isHostRef.current);
+      if (!isHostRef.current && shouldReconnectRef.current) {
+        scheduleGuestReconnect('La conexion P2P fallo.');
+      }
     });
   };
 
@@ -288,6 +355,10 @@ export default function usePeer(roomId) {
     if (!peerRef.current || peerRef.current.destroyed) return;
     console.log('Initiating native WebRTC connection to host:', destId);
     
+    clearRetryTimer(reconnectTimerRef);
+    if (connRef.current && !connRef.current.open) {
+      closeCurrentConnection();
+    }
     setIsConnecting(true);
     
     // Connect without legacy reliable option to avoid handshake hangs
@@ -428,6 +499,10 @@ export default function usePeer(roomId) {
   // Disconnect from current room
   const disconnect = () => {
     console.log('Disconnecting and cleaning peer resources');
+    shouldReconnectRef.current = false;
+    roomIdRef.current = null;
+    clearRetryTimer(reconnectTimerRef);
+    clearRetryTimer(hostRecoveryTimerRef);
     incomingFilesRef.current.clear();
     if (connRef.current) {
       connRef.current.close();

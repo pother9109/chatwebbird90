@@ -61,6 +61,7 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
   const isTypingRef = useRef(false);
 
   const inviteLink = `${window.location.origin}/?room=${roomId}&join=true`;
+  const recoverableStatus = Boolean(error && isConnecting);
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -369,7 +370,7 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
               📡
             </div>
 
-            {error ? (
+            {error && !recoverableStatus ? (
               <div style={{ maxWidth: '450px' }}>
                 <h3 style={{ color: 'var(--color-danger)', fontSize: '1.25rem', marginBottom: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
                   <AlertCircle /> Error en la sala
@@ -382,6 +383,11 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
             ) : isHost ? (
               <div className="fade-in" style={{ maxWidth: '500px', width: '100%' }}>
                 <h3 style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: '8px' }}>Esperando a la otra persona...</h3>
+                {recoverableStatus && (
+                  <p style={{ color: 'var(--color-secondary)', fontSize: '0.85rem', marginBottom: '14px', fontWeight: 600 }}>
+                    {error}
+                  </p>
+                )}
                 <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '30px' }}>
                   Para iniciar la conexión directa P2P, comparte este enlace de invitación. La sala se activará automáticamente al ingresar el otro participante.
                 </p>
@@ -436,6 +442,11 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
                   marginBottom: '20px'
                 }} />
                 <h3 style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: '8px' }}>Estableciendo conexión segura...</h3>
+                {recoverableStatus && (
+                  <p style={{ color: 'var(--color-secondary)', fontSize: '0.85rem', marginBottom: '14px', fontWeight: 600 }}>
+                    {error}
+                  </p>
+                )}
                 <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '30px' }}>
                   Buscando al creador de la sala para iniciar el túnel de datos cifrado (P2P).
                 </p>
