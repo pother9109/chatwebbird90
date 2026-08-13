@@ -11,7 +11,9 @@ import {
   sendFileChunks,
   startIncomingFileTransfer
 } from '../utils/fileTransfer.js';
-import { clearRetryTimer, getRetryDelay, isTransientPeerError } from '../utils/peerRecovery.js';
+import { CONNECTION_OPEN_TIMEOUT_MS, clearRetryTimer, getRetryDelay, isTransientPeerError } from '../utils/peerRecovery.js';
+import { applyReactionToMessages } from '../utils/messageInteractions.js';
+import { isOwnedRoom } from '../utils/roomOwnership.js';
 
 export default function usePeer(roomId) {
   const [peerId, setPeerId] = useState(null);
@@ -41,6 +43,10 @@ export default function usePeer(roomId) {
   // Helper to burn all messages locally
   const burnMessages = () => {
     setMessages([]);
+  };
+
+  const updateMessageReaction = (messageId, emoji, actorId) => {
+    setMessages((prev) => applyReactionToMessages(prev, messageId, emoji, actorId));
   };
 
   const closeCurrentConnection = () => {
@@ -102,7 +108,7 @@ export default function usePeer(roomId) {
   useEffect(() => {
     if (!roomId) return;
 
-    const host = !window.location.search.includes('join=true');
+    const host = !window.location.search.includes('join=true') || isOwnedRoom(roomId, 'private');
     setIsHost(host);
     isHostRef.current = host;
     shouldReconnectRef.current = true;
@@ -256,12 +262,31 @@ export default function usePeer(roomId) {
       }
     }, 200);
 
+    const openTimeout = setTimeout(() => {
+      if (connRef.current !== connection || connection.open) return;
+      console.warn('Connection open timeout; scheduling another attempt.');
+      clearInterval(openCheckInterval);
+      try {
+        connection.close();
+      } catch (err) {
+        console.warn('Failed to close timed-out connection:', err);
+      }
+      if (!isHostRef.current && shouldReconnectRef.current) {
+        connRef.current = null;
+        setIsConnected(false);
+        setIsConnecting(true);
+        scheduleGuestReconnect(getP2PFailureReason());
+      }
+    }, CONNECTION_OPEN_TIMEOUT_MS);
+
     if (connection.open) {
       clearInterval(openCheckInterval);
+      clearTimeout(openTimeout);
       onOpen();
     } else {
       connection.on('open', () => {
         clearInterval(openCheckInterval);
+        clearTimeout(openTimeout);
         onOpen();
       });
     }
@@ -277,6 +302,7 @@ export default function usePeer(roomId) {
             type: 'text',
             content: data.content,
             timer: data.timer,
+            replyTo: data.replyTo,
             timestamp: data.timestamp
           });
           break;
@@ -287,6 +313,7 @@ export default function usePeer(roomId) {
             type: 'sticker',
             content: data.content,
             timer: data.timer,
+            replyTo: data.replyTo,
             timestamp: data.timestamp
           });
           break;
@@ -305,6 +332,7 @@ export default function usePeer(roomId) {
             fileSize: data.size,
             timer: data.timer,
             viewOnce: data.viewOnce || false,
+            replyTo: data.replyTo,
             timestamp: data.timestamp
           });
           break;
@@ -323,6 +351,9 @@ export default function usePeer(roomId) {
         case 'typing':
           setIsPeerTyping(data.isTyping);
           break;
+        case 'reaction':
+          updateMessageReaction(data.messageId, data.emoji, 'peer');
+          break;
         case 'burn':
           burnMessages();
           break;
@@ -334,6 +365,7 @@ export default function usePeer(roomId) {
     connection.on('close', () => {
       console.log('Connection closed');
       clearInterval(openCheckInterval);
+      clearTimeout(openTimeout);
       if (connRef.current !== connection) return;
       setIsConnected(false);
       setIsConnecting(!isHostRef.current);
@@ -353,6 +385,7 @@ export default function usePeer(roomId) {
     connection.on('error', (err) => {
       console.error('Connection error:', err);
       clearInterval(openCheckInterval);
+      clearTimeout(openTimeout);
       if (connRef.current !== connection) return;
       setIsConnected(false);
       setIsConnecting(!isHostRef.current);
@@ -379,7 +412,7 @@ export default function usePeer(roomId) {
   };
 
   // Send text message
-  const sendMessage = (text, timer) => {
+  const sendMessage = (text, timer, replyTo = null) => {
     if (!connRef.current || !isConnected) return;
     
     const msgId = 'msg-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now();
@@ -388,6 +421,7 @@ export default function usePeer(roomId) {
       type: 'text',
       content: text,
       timer: timer || null,
+      replyTo,
       timestamp: Date.now()
     };
 
@@ -401,7 +435,7 @@ export default function usePeer(roomId) {
   };
 
   // Send sticker message
-  const sendSticker = (stickerUrl, timer) => {
+  const sendSticker = (stickerUrl, timer, replyTo = null) => {
     if (!connRef.current || !isConnected) return;
 
     const msgId = 'sticker-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now();
@@ -410,6 +444,7 @@ export default function usePeer(roomId) {
       type: 'sticker',
       content: stickerUrl,
       timer: timer || null,
+      replyTo,
       timestamp: Date.now()
     };
 
@@ -422,7 +457,7 @@ export default function usePeer(roomId) {
   };
 
   // Send binary file safely
-  const sendFile = async (file, timer, viewOnce) => {
+  const sendFile = async (file, timer, viewOnce, replyTo = null) => {
     if (!connRef.current || !isConnected) return;
     
     // Enforce a 15MB size limit to prevent WebRTC data channel buffer overflow crashes
@@ -444,7 +479,8 @@ export default function usePeer(roomId) {
       file,
       timer,
       viewOnce,
-      timestamp
+      timestamp,
+      replyTo
     });
     
     try {
@@ -453,7 +489,8 @@ export default function usePeer(roomId) {
         file,
         timer,
         viewOnce,
-        timestamp
+        timestamp,
+        replyTo
       }));
 
       await sendFileChunks(file, startPayload, (payload) => {
@@ -481,6 +518,18 @@ export default function usePeer(roomId) {
       type: 'typing',
       isTyping
     });
+  };
+
+  const sendReaction = (messageId, emoji) => {
+    if (!connRef.current || !isConnected) return;
+    const payload = {
+      type: 'reaction',
+      messageId,
+      emoji,
+      timestamp: Date.now()
+    };
+    connRef.current.send(payload);
+    updateMessageReaction(messageId, emoji, 'me');
   };
 
   // Clean / Burn all messages
@@ -541,6 +590,7 @@ export default function usePeer(roomId) {
     sendMessage,
     sendFile,
     sendSticker,
+    sendReaction,
     sendTyping,
     burn,
     burnMessage,

@@ -1,8 +1,18 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Download, Eye, EyeOff, FileText, Hourglass } from 'lucide-react';
+import { Download, Eye, EyeOff, FileText, Hourglass, Reply } from 'lucide-react';
 import { formatBytes } from '../../utils/formatBytes.js';
+import { REACTION_OPTIONS } from '../../utils/messageInteractions.js';
 
-export default function MessageBubble({ message, onExpire, onBurn, showAuthor = false }) {
+export default function MessageBubble({
+  message,
+  onExpire,
+  onBurn,
+  showAuthor = false,
+  isSelected = false,
+  onSelect,
+  onReply,
+  onReact
+}) {
   const [timeLeft, setTimeLeft] = useState(message.timer);
   const [imageUrl, setImageUrl] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -76,6 +86,10 @@ export default function MessageBubble({ message, onExpire, onBurn, showAuthor = 
   const nickname = isMe ? 'Tu' : (message.nickname || 'Anonimo');
   const userColor = message.color || '#06B6D4';
   const maxWidth = showAuthor ? '78%' : '75%';
+  const reactionEntries = Object.entries(message.reactions || {})
+    .map(([emoji, actors]) => [emoji, Object.keys(actors || {}).length])
+    .filter(([, count]) => count > 0);
+  const canInteract = Boolean(onSelect || onReply || onReact);
 
   const downloadFile = () => {
     if (!message.fileBlob) return;
@@ -119,6 +133,7 @@ export default function MessageBubble({ message, onExpire, onBurn, showAuthor = 
     <>
       <div
         className={`message-bubble-wrapper ${isMe ? 'msg-me' : 'msg-peer'}`}
+        onClick={() => onSelect?.(message)}
         style={{
           display: 'flex',
           flexDirection: 'column',
@@ -128,6 +143,7 @@ export default function MessageBubble({ message, onExpire, onBurn, showAuthor = 
           maxWidth,
           alignSelf: isMe ? 'flex-end' : 'flex-start',
           animation: 'fadeIn 0.25s ease-out forwards',
+          cursor: canInteract ? 'pointer' : 'default',
         }}
       >
         {showAuthor && (
@@ -165,9 +181,35 @@ export default function MessageBubble({ message, onExpire, onBurn, showAuthor = 
             boxShadow: message.type === 'sticker' ? 'none' : isMe ? '0 4px 15px rgba(139, 92, 246, 0.1)' : 'none',
             position: 'relative',
             overflow: 'hidden',
-            width: '100%'
+            width: '100%',
+            outline: isSelected ? '1px solid rgba(6, 182, 212, 0.45)' : 'none'
           }}
         >
+          {message.replyTo && (
+            <div style={{
+              padding: '7px 10px',
+              marginBottom: message.type === 'sticker' ? '8px' : '10px',
+              borderLeft: '3px solid var(--color-secondary)',
+              borderRadius: '8px',
+              background: 'rgba(6, 182, 212, 0.08)',
+              maxWidth: '100%'
+            }}>
+              <span style={{ display: 'block', color: 'var(--color-secondary)', fontSize: '0.72rem', fontWeight: 800 }}>
+                {message.replyTo.label || 'Mensaje'}
+              </span>
+              <span style={{
+                display: 'block',
+                color: 'var(--text-secondary)',
+                fontSize: '0.78rem',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap'
+              }}>
+                {message.replyTo.text}
+              </span>
+            </div>
+          )}
+
           {message.type === 'text' ? (
             <p style={{ wordBreak: 'break-word', fontSize: '0.95rem', whiteSpace: 'pre-wrap' }}>{message.content}</p>
           ) : message.type === 'sticker' ? (
@@ -312,6 +354,85 @@ export default function MessageBubble({ message, onExpire, onBurn, showAuthor = 
             </>
           )}
         </div>
+
+        {reactionEntries.length > 0 && (
+          <div style={{
+            display: 'inline-flex',
+            gap: '4px',
+            alignItems: 'center',
+            marginTop: '-2px',
+            padding: '3px 6px',
+            borderRadius: '99px',
+            background: 'rgba(10, 15, 30, 0.9)',
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            boxShadow: '0 4px 10px rgba(0,0,0,0.22)'
+          }}>
+            {reactionEntries.map(([emoji, count]) => (
+              <span key={emoji} style={{ fontSize: '0.78rem', lineHeight: 1 }}>
+                {emoji}{count > 1 ? ` ${count}` : ''}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {isSelected && (
+          <div
+            onClick={(event) => event.stopPropagation()}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '5px',
+              marginTop: '7px',
+              padding: '5px',
+              borderRadius: '99px',
+              background: 'rgba(10, 15, 30, 0.92)',
+              border: '1px solid rgba(255, 255, 255, 0.08)',
+              boxShadow: '0 8px 22px rgba(0,0,0,0.25)'
+            }}
+          >
+            {REACTION_OPTIONS.map((emoji) => (
+              <button
+                key={emoji}
+                type="button"
+                onClick={() => onReact?.(message.id, emoji)}
+                aria-label={`Reaccionar con ${emoji}`}
+                title={`Reaccionar con ${emoji}`}
+                style={{
+                  width: '30px',
+                  height: '30px',
+                  borderRadius: '50%',
+                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                  background: 'rgba(255, 255, 255, 0.04)',
+                  cursor: 'pointer',
+                  fontSize: '1rem',
+                  lineHeight: 1
+                }}
+              >
+                {emoji}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => onReply?.(message)}
+              aria-label="Responder mensaje"
+              title="Responder"
+              style={{
+                width: '30px',
+                height: '30px',
+                borderRadius: '50%',
+                border: '1px solid rgba(6, 182, 212, 0.25)',
+                background: 'rgba(6, 182, 212, 0.08)',
+                color: 'var(--color-secondary)',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
+            >
+              <Reply size={15} />
+            </button>
+          </div>
+        )}
 
         <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '3px', padding: '0 4px' }}>
           {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}

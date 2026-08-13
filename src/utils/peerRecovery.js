@@ -6,6 +6,8 @@ const TRANSIENT_PEER_ERRORS = new Set([
   'server-error'
 ]);
 
+export const CONNECTION_OPEN_TIMEOUT_MS = 12000;
+
 export function isTransientPeerError(err) {
   return TRANSIENT_PEER_ERRORS.has(err?.type);
 }

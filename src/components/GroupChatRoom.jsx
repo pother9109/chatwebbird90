@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Send, Paperclip, Flame, LogOut, Copy, Check, 
-  Hourglass, FileText, Eye, AlertCircle, Users, Smile
+  Hourglass, FileText, Eye, AlertCircle, Users, Smile, X
 } from 'lucide-react';
 import { STICKER_PACKS } from '../constants/stickers.js';
 import { formatBytes } from '../utils/formatBytes.js';
+import { createReplyPreview } from '../utils/messageInteractions.js';
 import InviteQr from './common/InviteQr.jsx';
 import MessageBubble from './common/MessageBubble.jsx';
 
@@ -21,6 +22,7 @@ export default function GroupChatRoom({ roomId, groupPeerState, onLeave }) {
     sendMessage,
     sendFile,
     sendSticker,
+    sendReaction,
     sendTyping,
     burn,
     burnMessage,
@@ -34,6 +36,8 @@ export default function GroupChatRoom({ roomId, groupPeerState, onLeave }) {
   const [viewOnceChecked, setViewOnceChecked] = useState(false);
   const [stickerPickerOpen, setStickerPickerOpen] = useState(false);
   const [expiredIds, setExpiredIds] = useState(new Set());
+  const [selectedMessageId, setSelectedMessageId] = useState(null);
+  const [replyTarget, setReplyTarget] = useState(null);
 
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -52,16 +56,19 @@ export default function GroupChatRoom({ roomId, groupPeerState, onLeave }) {
 
   const handleSend = (e) => {
     e.preventDefault();
+    const replyTo = replyTarget;
     if (pendingFile) {
-      sendFile(pendingFile, destructTimer > 0 ? destructTimer : null, viewOnceChecked);
+      sendFile(pendingFile, destructTimer > 0 ? destructTimer : null, viewOnceChecked, replyTo);
       setPendingFile(null);
       setViewOnceChecked(false);
     }
     if (inputText.trim()) {
-      sendMessage(inputText.trim(), destructTimer > 0 ? destructTimer : null);
+      sendMessage(inputText.trim(), destructTimer > 0 ? destructTimer : null, replyTo);
       setInputText('');
       sendTyping(false);
     }
+    setReplyTarget(null);
+    setSelectedMessageId(null);
   };
 
   const handleFileUpload = (e) => {
@@ -70,12 +77,48 @@ export default function GroupChatRoom({ roomId, groupPeerState, onLeave }) {
       setPendingFile(file);
       setViewOnceChecked(false);
     }
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handlePaste = (e) => {
+    const items = Array.from(e.clipboardData?.items || []);
+    const imageItem = items.find((item) => item.type?.startsWith('image/'));
+    if (!imageItem) return;
+
+    const blob = imageItem.getAsFile();
+    if (!blob) return;
+
+    const extension = blob.type?.split('/')[1] || 'png';
+    const file = new File([blob], `imagen-portapapeles-${Date.now()}.${extension}`, {
+      type: blob.type || 'image/png'
+    });
+
+    e.preventDefault();
+    setPendingFile(file);
+    setViewOnceChecked(false);
+  };
+
+  const handleSelectMessage = (message) => {
+    if (message.sender === 'system') return;
+    setSelectedMessageId((current) => current === message.id ? null : message.id);
+  };
+
+  const handleReplyMessage = (message) => {
+    const preview = createReplyPreview(message);
+    if (!preview) return;
+    setReplyTarget(preview);
+    setSelectedMessageId(null);
+  };
+
+  const handleReactMessage = (messageId, emoji) => {
+    sendReaction(messageId, emoji);
+    setSelectedMessageId(null);
   };
 
   const visibleMessages = messages.filter(msg => !expiredIds.has(msg.id));
 
   return (
-    <div className="container flex-center" style={{ height: 'calc(100vh - 40px)', padding: '10px', maxWidth: '950px' }}>
+    <div className="container flex-center" onPaste={handlePaste} style={{ height: 'calc(100vh - 40px)', padding: '10px', maxWidth: '950px' }}>
       <div className="glass-panel" style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' }}>
         
         {/* GROUP HEADER */}
@@ -253,6 +296,10 @@ export default function GroupChatRoom({ roomId, groupPeerState, onLeave }) {
                   onExpire={(id) => setExpiredIds(prev => new Set(prev).add(id))} 
                   onBurn={burnMessage}
                   showAuthor
+                  isSelected={selectedMessageId === msg.id}
+                  onSelect={handleSelectMessage}
+                  onReply={handleReplyMessage}
+                  onReact={handleReactMessage}
                 />
               ))}
 
@@ -263,6 +310,38 @@ export default function GroupChatRoom({ roomId, groupPeerState, onLeave }) {
               )}
               <div ref={messagesEndRef} />
             </div>
+
+            {replyTarget && (
+              <div className="glass-panel fade-in" style={{
+                margin: '10px 20px 0 20px',
+                padding: '10px 12px',
+                borderRadius: '12px',
+                background: 'rgba(6, 182, 212, 0.08)',
+                border: '1px solid rgba(6, 182, 212, 0.18)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '12px'
+              }}>
+                <div style={{ minWidth: 0, borderLeft: '3px solid var(--color-secondary)', paddingLeft: '10px' }}>
+                  <span style={{ display: 'block', color: 'var(--color-secondary)', fontSize: '0.75rem', fontWeight: 800 }}>
+                    Respondiendo a {replyTarget.label}
+                  </span>
+                  <span style={{ display: 'block', color: 'var(--text-secondary)', fontSize: '0.82rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {replyTarget.text}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setReplyTarget(null)}
+                  aria-label="Cancelar respuesta"
+                  title="Cancelar respuesta"
+                  style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex' }}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            )}
 
             {/* PENDING FILE PREVIEW */}
             {pendingFile && (
@@ -307,7 +386,18 @@ export default function GroupChatRoom({ roomId, groupPeerState, onLeave }) {
                     </span>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(56px, 1fr))', gap: '10px' }}>
                       {STICKER_PACKS[pack].map((stk) => (
-                        <button key={stk.id} type="button" aria-label={`Enviar sticker ${stk.id}`} onClick={() => sendSticker(stk.url, destructTimer > 0 ? destructTimer : null)} className="sticker-btn" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '10px', padding: '6px' }}>
+                        <button
+                          key={stk.id}
+                          type="button"
+                          aria-label={`Enviar sticker ${stk.id}`}
+                          onClick={() => {
+                            sendSticker(stk.url, destructTimer > 0 ? destructTimer : null, replyTarget);
+                            setReplyTarget(null);
+                            setSelectedMessageId(null);
+                          }}
+                          className="sticker-btn"
+                          style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '10px', padding: '6px' }}
+                        >
                           <img src={stk.url} alt={stk.alt} style={{ width: '40px', height: '40px', objectFit: 'contain' }} />
                         </button>
                       ))}

@@ -5,7 +5,7 @@ export function createFileId(prefix = 'file') {
   return `${prefix}-${Math.random().toString(36).slice(2, 11)}-${Date.now()}`;
 }
 
-export function createFileStartPayload({ id, file, timer, viewOnce, timestamp, nickname, color }) {
+export function createFileStartPayload({ id, file, timer, viewOnce, timestamp, nickname, color, replyTo }) {
   const payload = {
     id,
     type: 'file_start',
@@ -20,11 +20,12 @@ export function createFileStartPayload({ id, file, timer, viewOnce, timestamp, n
 
   if (nickname) payload.nickname = nickname;
   if (color) payload.color = color;
+  if (replyTo) payload.replyTo = replyTo;
 
   return payload;
 }
 
-export function createLocalFileMessage({ id, file, timer, viewOnce, timestamp, nickname, color }) {
+export function createLocalFileMessage({ id, file, timer, viewOnce, timestamp, nickname, color, replyTo }) {
   const message = {
     id,
     sender: 'me',
@@ -40,6 +41,7 @@ export function createLocalFileMessage({ id, file, timer, viewOnce, timestamp, n
 
   if (nickname) message.nickname = nickname;
   if (color) message.color = color;
+  if (replyTo) message.replyTo = replyTo;
 
   return message;
 }
@@ -84,6 +86,7 @@ export function startIncomingFileTransfer(transfers, payload) {
     timestamp: payload.timestamp || Date.now(),
     nickname: payload.nickname,
     color: payload.color,
+    replyTo: payload.replyTo,
     totalChunks: payload.totalChunks,
     chunks: new Array(payload.totalChunks),
     receivedChunks: 0
@@ -125,6 +128,7 @@ export function createIncomingFileMessage(transfer, sender = 'peer') {
 
   if (transfer.nickname) message.nickname = transfer.nickname;
   if (transfer.color) message.color = transfer.color;
+  if (transfer.replyTo) message.replyTo = transfer.replyTo;
 
   return message;
 }

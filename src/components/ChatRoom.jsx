@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Send, Paperclip, Shield, Flame, LogOut, Copy, Check, 
-  Hourglass, FileText, Eye, EyeOff, AlertCircle, Smile
+  Hourglass, FileText, Eye, EyeOff, AlertCircle, Smile, X
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { STICKER_PACKS } from '../constants/stickers.js';
 import { formatBytes } from '../utils/formatBytes.js';
+import { createReplyPreview } from '../utils/messageInteractions.js';
 import InviteQr from './common/InviteQr.jsx';
 import MessageBubble from './common/MessageBubble.jsx';
 
@@ -40,6 +41,7 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
     sendMessage,
     sendFile,
     sendSticker,
+    sendReaction,
     sendTyping,
     burn,
     burnMessage,
@@ -54,6 +56,8 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
   const [pendingFile, setPendingFile] = useState(null);
   const [viewOnceChecked, setViewOnceChecked] = useState(false);
   const [stickerPickerOpen, setStickerPickerOpen] = useState(false);
+  const [selectedMessageId, setSelectedMessageId] = useState(null);
+  const [replyTarget, setReplyTarget] = useState(null);
 
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -92,18 +96,22 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
 
   const handleSend = (e) => {
     e.preventDefault();
+    const replyTo = replyTarget;
     
     if (pendingFile) {
-      sendFile(pendingFile, destructTimer > 0 ? destructTimer : null, viewOnceChecked);
+      sendFile(pendingFile, destructTimer > 0 ? destructTimer : null, viewOnceChecked, replyTo);
       setPendingFile(null);
       setViewOnceChecked(false);
     }
     
     if (inputText.trim()) {
-      sendMessage(inputText.trim(), destructTimer > 0 ? destructTimer : null);
+      sendMessage(inputText.trim(), destructTimer > 0 ? destructTimer : null, replyTo);
       setInputText('');
       handleTyping(false);
     }
+
+    setReplyTarget(null);
+    setSelectedMessageId(null);
   };
 
   const handleFileUpload = (e) => {
@@ -160,6 +168,41 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
     }
   };
 
+  const handlePaste = (e) => {
+    const items = Array.from(e.clipboardData?.items || []);
+    const imageItem = items.find((item) => item.type?.startsWith('image/'));
+    if (!imageItem) return;
+
+    const blob = imageItem.getAsFile();
+    if (!blob) return;
+
+    const extension = blob.type?.split('/')[1] || 'png';
+    const file = new File([blob], `imagen-portapapeles-${Date.now()}.${extension}`, {
+      type: blob.type || 'image/png'
+    });
+
+    e.preventDefault();
+    setPendingFile(file);
+    setViewOnceChecked(false);
+  };
+
+  const handleSelectMessage = (message) => {
+    if (message.sender === 'system') return;
+    setSelectedMessageId((current) => current === message.id ? null : message.id);
+  };
+
+  const handleReplyMessage = (message) => {
+    const preview = createReplyPreview(message);
+    if (!preview) return;
+    setReplyTarget(preview);
+    setSelectedMessageId(null);
+  };
+
+  const handleReactMessage = (messageId, emoji) => {
+    sendReaction(messageId, emoji);
+    setSelectedMessageId(null);
+  };
+
   const handleExpireMessage = (msgId) => {
     setExpiredIds((prev) => {
       const next = new Set(prev);
@@ -182,6 +225,7 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
+      onPaste={handlePaste}
     >
       <div 
         className="glass-panel" 
@@ -508,6 +552,10 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
                       message={msg} 
                       onExpire={handleExpireMessage} 
                       onBurn={burnMessage}
+                      isSelected={selectedMessageId === msg.id}
+                      onSelect={handleSelectMessage}
+                      onReply={handleReplyMessage}
+                      onReact={handleReactMessage}
                     />
                   );
                 })
@@ -537,6 +585,38 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
 
               <div ref={messagesEndRef} />
             </div>
+
+            {replyTarget && (
+              <div className="glass-panel fade-in" style={{
+                margin: '10px 20px 0 20px',
+                padding: '10px 12px',
+                borderRadius: '12px',
+                background: 'rgba(6, 182, 212, 0.08)',
+                border: '1px solid rgba(6, 182, 212, 0.18)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '12px'
+              }}>
+                <div style={{ minWidth: 0, borderLeft: '3px solid var(--color-secondary)', paddingLeft: '10px' }}>
+                  <span style={{ display: 'block', color: 'var(--color-secondary)', fontSize: '0.75rem', fontWeight: 800 }}>
+                    Respondiendo a {replyTarget.label}
+                  </span>
+                  <span style={{ display: 'block', color: 'var(--text-secondary)', fontSize: '0.82rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {replyTarget.text}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setReplyTarget(null)}
+                  aria-label="Cancelar respuesta"
+                  title="Cancelar respuesta"
+                  style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex' }}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            )}
 
             {/* PENDING FILE PREVIEW BAR */}
             {pendingFile && (
@@ -683,7 +763,9 @@ export default function ChatRoom({ roomId, peerState, onLeave }) {
                           type="button"
                           aria-label={`Enviar sticker ${sticker.id}`}
                           onClick={() => {
-                            sendSticker(sticker.url, destructTimer > 0 ? destructTimer : null);
+                            sendSticker(sticker.url, destructTimer > 0 ? destructTimer : null, replyTarget);
+                            setReplyTarget(null);
+                            setSelectedMessageId(null);
                           }}
                           className="sticker-btn"
                           style={{

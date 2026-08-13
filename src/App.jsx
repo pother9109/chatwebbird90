@@ -5,6 +5,7 @@ import GroupChatRoom from './components/GroupChatRoom.jsx';
 import ErrorBoundary from './components/ErrorBoundary.jsx';
 import usePeer from './hooks/usePeer.js';
 import { useGroupPeer } from './hooks/useGroupPeer.js';
+import { markOwnedRoom } from './utils/roomOwnership.js';
 
 export default function App() {
   const [roomId, setRoomId] = useState(null);
@@ -33,6 +34,7 @@ export default function App() {
   const handleCreateRoom = (newRoomId, selectedMode, userNickname) => {
     setChatMode(selectedMode);
     setNickname(userNickname);
+    markOwnedRoom(newRoomId, selectedMode);
     const newUrl = `${window.location.origin}/?room=${newRoomId}&mode=${selectedMode}`;
     window.history.pushState({ path: newUrl }, '', newUrl);
     setRoomId(newRoomId);

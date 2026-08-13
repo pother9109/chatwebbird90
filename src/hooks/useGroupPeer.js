@@ -11,7 +11,9 @@ import {
   sendFileChunks,
   startIncomingFileTransfer
 } from '../utils/fileTransfer.js';
-import { clearRetryTimer, getRetryDelay, isTransientPeerError } from '../utils/peerRecovery.js';
+import { CONNECTION_OPEN_TIMEOUT_MS, clearRetryTimer, getRetryDelay, isTransientPeerError } from '../utils/peerRecovery.js';
+import { applyReactionToMessages } from '../utils/messageInteractions.js';
+import { isOwnedRoom } from '../utils/roomOwnership.js';
 
 const PASTEL_COLORS = [
   '#8B5CF6', '#06B6D4', '#EC4899', '#10B981', 
@@ -50,6 +52,12 @@ export function useGroupPeer(roomId, userNickname) {
   const addMessage = (msg) => {
     setMessages((prev) => [...prev, msg]);
   };
+
+  const updateMessageReaction = (messageId, emoji, actorId) => {
+    setMessages((prev) => applyReactionToMessages(prev, messageId, emoji, actorId));
+  };
+
+  const getLocalActorId = () => peerRef.current?.id || (isHostRef.current ? 'host' : 'me');
 
   const closeHostConnection = () => {
     if (hostConnRef.current) {
@@ -152,7 +160,7 @@ export function useGroupPeer(roomId, userNickname) {
     if (!roomId) return;
 
     myNicknameRef.current = userNickname || `Fantasma-${Math.floor(100 + Math.random() * 900)}`;
-    const host = !window.location.search.includes('join=true');
+    const host = !window.location.search.includes('join=true') || isOwnedRoom(roomId, 'group');
     setIsHost(host);
     isHostRef.current = host;
     shouldReconnectRef.current = true;
@@ -295,6 +303,17 @@ export function useGroupPeer(roomId, userNickname) {
               broadcastFromHost(data, conn.peer);
               break;
             }
+            case 'reaction': {
+              const actorId = data.actorId || conn.peer;
+              const reactionPayload = {
+                ...data,
+                actorId,
+                nickname: data.nickname || connectionsRef.current.get(conn.peer)?.nickname
+              };
+              updateMessageReaction(data.messageId, data.emoji, actorId);
+              broadcastFromHost(reactionPayload, conn.peer);
+              break;
+            }
             case 'burn': {
               burnMessages();
               broadcastFromHost(data, conn.peer);
@@ -413,10 +432,28 @@ export function useGroupPeer(roomId, userNickname) {
       }
     }, 200);
 
+    const openTimeout = setTimeout(() => {
+      if (hostConnRef.current !== conn || conn.open) return;
+      console.warn('Group host connection open timeout; scheduling another attempt.');
+      clearInterval(openPoll);
+      try {
+        conn.close();
+      } catch (err) {
+        console.warn('Failed to close timed-out group connection:', err);
+      }
+      if (shouldReconnectRef.current && !isHostRef.current) {
+        hostConnRef.current = null;
+        setIsConnected(false);
+        setIsConnecting(true);
+        scheduleGuestReconnect(getP2PFailureReason());
+      }
+    }, CONNECTION_OPEN_TIMEOUT_MS);
+
     const onHostConnOpen = () => {
       if (openHandled || hostConnRef.current !== conn) return;
       openHandled = true;
       clearInterval(openPoll);
+      clearTimeout(openTimeout);
       setIsConnected(true);
       setIsConnecting(false);
       setError(null);
@@ -461,6 +498,7 @@ export function useGroupPeer(roomId, userNickname) {
             type: data.type,
             content: data.content,
             timer: data.timer,
+            replyTo: data.replyTo,
             timestamp: data.timestamp
           });
           break;
@@ -482,6 +520,7 @@ export function useGroupPeer(roomId, userNickname) {
             fileSize: data.size,
             timer: data.timer,
             viewOnce: data.viewOnce || false,
+            replyTo: data.replyTo,
             timestamp: data.timestamp
           });
           break;
@@ -514,6 +553,10 @@ export function useGroupPeer(roomId, userNickname) {
           }
           break;
         }
+        case 'reaction': {
+          updateMessageReaction(data.messageId, data.emoji, data.actorId || data.nickname || 'peer');
+          break;
+        }
         case 'burn': {
           burnMessages();
           break;
@@ -525,6 +568,7 @@ export function useGroupPeer(roomId, userNickname) {
 
     conn.on('close', () => {
       clearInterval(openPoll);
+      clearTimeout(openTimeout);
       if (hostConnRef.current !== conn) return;
       setIsConnected(false);
       setIsConnecting(true);
@@ -540,6 +584,7 @@ export function useGroupPeer(roomId, userNickname) {
     conn.on('error', (err) => {
       console.error('Group host connection error:', err);
       clearInterval(openPoll);
+      clearTimeout(openTimeout);
       if (hostConnRef.current !== conn) return;
       setIsConnected(false);
       setIsConnecting(true);
@@ -550,7 +595,7 @@ export function useGroupPeer(roomId, userNickname) {
   };
 
   // Actions
-  const sendMessage = (text, timer) => {
+  const sendMessage = (text, timer, replyTo = null) => {
     if (!isConnected) return;
     const msgId = 'gmsg-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now();
     const payload = {
@@ -560,6 +605,7 @@ export function useGroupPeer(roomId, userNickname) {
       nickname: myNicknameRef.current,
       color: myColorRef.current,
       timer: timer || null,
+      replyTo,
       timestamp: Date.now()
     };
 
@@ -572,7 +618,7 @@ export function useGroupPeer(roomId, userNickname) {
     }
   };
 
-  const sendSticker = (stickerUrl, timer) => {
+  const sendSticker = (stickerUrl, timer, replyTo = null) => {
     if (!isConnected) return;
     const msgId = 'gsticker-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now();
     const payload = {
@@ -582,6 +628,7 @@ export function useGroupPeer(roomId, userNickname) {
       nickname: myNicknameRef.current,
       color: myColorRef.current,
       timer: timer || null,
+      replyTo,
       timestamp: Date.now()
     };
 
@@ -594,7 +641,7 @@ export function useGroupPeer(roomId, userNickname) {
     }
   };
 
-  const sendFile = async (file, timer, viewOnce) => {
+  const sendFile = async (file, timer, viewOnce, replyTo = null) => {
     if (!isConnected) return;
     if (file.size > MAX_P2P_FILE_SIZE) {
       alert('El archivo supera el limite de 15MB para envios P2P.');
@@ -611,7 +658,8 @@ export function useGroupPeer(roomId, userNickname) {
         viewOnce,
         timestamp,
         nickname: myNicknameRef.current,
-        color: myColorRef.current
+        color: myColorRef.current,
+        replyTo
       });
 
       const localMsg = createLocalFileMessage({
@@ -621,7 +669,8 @@ export function useGroupPeer(roomId, userNickname) {
         viewOnce,
         timestamp,
         nickname: myNicknameRef.current,
-        color: myColorRef.current
+        color: myColorRef.current,
+        replyTo
       });
 
       if (isHostRef.current) {
@@ -655,6 +704,28 @@ export function useGroupPeer(roomId, userNickname) {
       nickname: myNicknameRef.current,
       isTyping
     };
+    if (isHostRef.current) {
+      broadcastFromHost(payload);
+    } else if (hostConnRef.current && hostConnRef.current.open) {
+      hostConnRef.current.send(payload);
+    }
+  };
+
+  const sendReaction = (messageId, emoji) => {
+    if (!isConnected) return;
+
+    const actorId = getLocalActorId();
+    const payload = {
+      type: 'reaction',
+      messageId,
+      emoji,
+      actorId,
+      nickname: myNicknameRef.current,
+      timestamp: Date.now()
+    };
+
+    updateMessageReaction(messageId, emoji, actorId);
+
     if (isHostRef.current) {
       broadcastFromHost(payload);
     } else if (hostConnRef.current && hostConnRef.current.open) {
@@ -729,6 +800,7 @@ export function useGroupPeer(roomId, userNickname) {
     sendMessage,
     sendFile,
     sendSticker,
+    sendReaction,
     sendTyping,
     burn,
     burnMessage,
